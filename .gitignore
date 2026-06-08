@@ -4,3 +4,8 @@
 config.toml
 AGENTS.md
 CLAUDE.md
+
+# Secrets
+.env
+credentials.json
+n8n-data/
