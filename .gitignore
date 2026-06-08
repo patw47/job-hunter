@@ -1,0 +1,6 @@
+# Agent context files
+.claude/
+.codex/
+config.toml
+AGENTS.md
+CLAUDE.md
