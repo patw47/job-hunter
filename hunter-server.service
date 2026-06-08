@@ -13,7 +13,7 @@ Environment=HOME=/home/thehunter
 Environment=PATH=/home/thehunter/.npm-global/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin
 Environment=HUNTER_BRIDGE_PORT=18798
 Environment=OPENCLAW_CONFIG_PATH=/home/thehunter/.openclaw/openclaw.json
-ExecStart=/usr/bin/python3 /opt/apps/job-hunter/hunter_server.py
+ExecStart=/home/thehunter/venv/bin/python3 /opt/apps/job-hunter/hunter_server.py
 Restart=always
 RestartSec=5
 StandardOutput=journal
