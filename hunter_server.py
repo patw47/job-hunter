@@ -1,0 +1,119 @@
+#!/usr/bin/env python3
+"""
+The Hunter HTTP bridge for n8n.
+
+Pont entre n8n et l'agent OpenClaw `the-hunter` via la CLI `openclaw agent`.
+
+Routes:
+  GET  /health         -- healthcheck
+  POST /analyze        -- offer-analysis skill (Haiku)
+  POST /rewrite-cv     -- cv-rewriter skill (Sonnet)
+  POST /cover-letter   -- cover-letter-writer skill (Sonnet)
+  POST /form-answers   -- form-answerer skill (Haiku)
+  POST /report         -- weekly-reporter skill (Haiku)
+
+Tourne en tant qu'utilisateur `thehunter`.
+"""
+from http.server import HTTPServer, BaseHTTPRequestHandler
+import subprocess, json, os, time
+
+PORT = int(os.environ.get("HUNTER_BRIDGE_PORT", "18798"))
+OPENCLAW_CONFIG = os.environ.get(
+    "OPENCLAW_CONFIG_PATH", "/home/thehunter/.openclaw/openclaw.json"
+)
+AGENT_ID = "the-hunter"
+
+SKILL_MAP = {
+    "/analyze":       "offer-analysis",
+    "/rewrite-cv":    "cv-rewriter",
+    "/cover-letter":  "cover-letter-writer",
+    "/form-answers":  "form-answerer",
+    "/report":        "weekly-reporter",
+}
+
+
+def call_hunter(message, tag, timeout=600):
+    session_id = f"n8n-{tag}-{int(time.time())}"
+    env = os.environ.copy()
+    env["OPENCLAW_CONFIG_PATH"] = OPENCLAW_CONFIG
+    env.setdefault("HOME", "/home/thehunter")
+    r = subprocess.run(
+        ["openclaw", "agent", "--agent", AGENT_ID,
+         "--session-id", session_id, "--message", message,
+         "--json", "--timeout", str(timeout)],
+        capture_output=True, text=True, timeout=timeout + 20, env=env,
+    )
+    return r.stdout.strip()
+
+
+def extract_inner(stdout):
+    try:
+        outer = json.loads(stdout)
+        result_obj = outer.get("result", {})
+        fat = result_obj.get("finalAssistantVisibleText")
+        if fat:
+            return fat
+        payloads = result_obj.get("payloads", [])
+        if payloads and isinstance(payloads, list):
+            all_text = "\n".join(p.get("text", "") for p in payloads if p.get("text"))
+            if all_text:
+                return all_text
+        for key in ("response", "content", "message", "text", "output"):
+            if key in outer and isinstance(outer[key], str):
+                return outer[key]
+        return stdout
+    except Exception:
+        return stdout
+
+
+def build_message(skill, brief):
+    return (
+        f"[{skill.upper()} SKILL]\n"
+        "Brief reçu depuis n8n :\n"
+        + json.dumps(brief, ensure_ascii=False, indent=2)
+        + f"\n\nApplique la skill {skill} selon SKILL.md."
+    )
+
+
+class Handler(BaseHTTPRequestHandler):
+    def _send(self, code, obj):
+        payload = json.dumps(obj, ensure_ascii=False).encode("utf-8")
+        self.send_response(code)
+        self.send_header("Content-Type", "application/json; charset=utf-8")
+        self.send_header("Content-Length", str(len(payload)))
+        self.end_headers()
+        self.wfile.write(payload)
+
+    def do_GET(self):
+        if self.path == "/health":
+            self._send(200, {"status": "ok", "service": "hunter-bridge", "agent": AGENT_ID, "port": PORT})
+        else:
+            self._send(404, {"error": "not found"})
+
+    def do_POST(self):
+        skill = SKILL_MAP.get(self.path)
+        if not skill:
+            self._send(404, {"error": "not found"})
+            return
+        length = int(self.headers.get("Content-Length", 0))
+        raw = self.rfile.read(length).decode("utf-8") if length else ""
+        try:
+            body = json.loads(raw) if raw else {}
+        except Exception:
+            body = {}
+        try:
+            tag = self.path.lstrip("/")
+            message = build_message(skill, body)
+            stdout = call_hunter(message, tag)
+            result = extract_inner(stdout)
+            self._send(200, {"ok": True, "skill": skill, "result": result})
+        except Exception as e:
+            self._send(200, {"ok": False, "skill": skill, "error": str(e)})
+
+    def log_message(self, *_):
+        pass
+
+
+if __name__ == "__main__":
+    print(f"Hunter HTTP server listening on 127.0.0.1:{PORT}")
+    HTTPServer(("127.0.0.1", PORT), Handler).serve_forever()
