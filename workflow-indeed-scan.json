@@ -230,9 +230,7 @@
       "typeVersion": 3,
       "position": [1760, 0],
       "parameters": {
-        "mode": "chooseBranch",
-        "chooseBranchMode": "waitForAll",
-        "output": "empty"
+        "mode": "append"
       }
     },
     {
@@ -255,6 +253,39 @@
           ]
         },
         "options": {}
+      }
+    },
+    {
+      "id": "prepare-dedup",
+      "name": "Prepare: Dedup Request",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [2200, 0],
+      "parameters": {
+        "jsCode": "// Format scan_date as dd.mm.yyyy and extract offers for dedup\nconst scanResult = $input.first().json.scan_result || $input.first().json;\nconst offers = scanResult.offers || [];\n\nlet scanDate;\ntry {\n  const d = new Date(scanResult.scanDate);\n  const dd = String(d.getDate()).padStart(2, '0');\n  const mm = String(d.getMonth() + 1).padStart(2, '0');\n  const yyyy = d.getFullYear();\n  scanDate = `${dd}.${mm}.${yyyy}`;\n} catch (_) {\n  const now = new Date();\n  scanDate = `${String(now.getDate()).padStart(2,'0')}.${String(now.getMonth()+1).padStart(2,'0')}.${now.getFullYear()}`;\n}\n\nreturn [{ json: { offers, scan_date: scanDate } }];"
+      }
+    },
+    {
+      "id": "dedup-check",
+      "name": "Dedup: Check + Log",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [2420, 0],
+      "parameters": {
+        "method": "POST",
+        "url": "=http://127.0.0.1:{{ $env.HUNTER_BRIDGE_PORT ?? '18798' }}/dedup",
+        "sendBody": true,
+        "contentType": "raw",
+        "rawContentType": "application/json",
+        "body": "={{ JSON.stringify($json) }}",
+        "options": {
+          "timeout": 60000,
+          "response": {
+            "response": {
+              "responseFormat": "json"
+            }
+          }
+        }
       }
     }
   ],
@@ -309,6 +340,16 @@
       "main": [
         [{"node": "Scan Output", "type": "main", "index": 0}]
       ]
+    },
+    "Scan Output": {
+      "main": [
+        [{"node": "Prepare: Dedup Request", "type": "main", "index": 0}]
+      ]
+    },
+    "Prepare: Dedup Request": {
+      "main": [
+        [{"node": "Dedup: Check + Log", "type": "main", "index": 0}]
+      ]
     }
   },
   "settings": {
@@ -327,6 +368,7 @@
   "tags": [
     {"name": "job-hunter"},
     {"name": "epic-2-pipeline-scanning"},
-    {"name": "sprint-0"}
+    {"name": "sprint-0"},
+    {"name": "sprint-1-dedup"}
   ]
 }

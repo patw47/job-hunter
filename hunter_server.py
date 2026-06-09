@@ -16,6 +16,7 @@ Tourne en tant qu'utilisateur `thehunter`.
 """
 from http.server import HTTPServer, BaseHTTPRequestHandler
 import subprocess, json, os, time
+from datetime import datetime
 
 PORT = int(os.environ.get("HUNTER_BRIDGE_PORT", "18798"))
 OPENCLAW_CONFIG = os.environ.get(
@@ -66,6 +67,55 @@ def extract_inner(stdout):
         return stdout
 
 
+def _today_ddmmyyyy() -> str:
+    return datetime.now().strftime("%d.%m.%Y")
+
+
+def _handle_dedup(body: dict) -> dict:
+    """Deduplicate offers against SCANNED_HASHES and write all new hashes in batch."""
+    from deduplication import compute_hash, log_hashes, open_scanned_hashes
+
+    offers: list[dict] = body.get("offers", [])
+    scan_date: str = body.get("scan_date") or _today_ddmmyyyy()
+
+    if not offers:
+        return {"ok": True, "new_offers": [], "total_scanned": 0, "new_count": 0, "duplicate_count": 0}
+
+    sheet = open_scanned_hashes()
+    # Load existing hashes once — avoid one API call per offer
+    existing_hashes: set[str] = set(sheet.col_values(1))
+
+    new_offers: list[dict] = []
+    new_hashes: list[dict] = []
+
+    for offer in offers:
+        url: str = offer.get("url", "")
+        url_hash = compute_hash(url)
+        if url_hash in existing_hashes:
+            continue
+        # Track in-session to avoid writing the same URL twice in one scan
+        existing_hashes.add(url_hash)
+        new_offers.append(offer)
+        new_hashes.append({
+            "url_hash": url_hash,
+            "title": offer.get("title", ""),
+            "company": offer.get("company", ""),
+            "url": url,
+            "source": offer.get("source", ""),
+            "scan_date": scan_date,
+        })
+
+    log_hashes(new_hashes, sheet)
+
+    return {
+        "ok": True,
+        "new_offers": new_offers,
+        "total_scanned": len(offers),
+        "new_count": len(new_offers),
+        "duplicate_count": len(offers) - len(new_offers),
+    }
+
+
 def build_message(skill, brief):
     return (
         f"[{skill.upper()} SKILL]\n"
@@ -91,6 +141,19 @@ class Handler(BaseHTTPRequestHandler):
             self._send(404, {"error": "not found"})
 
     def do_POST(self):
+        if self.path == "/dedup":
+            length = int(self.headers.get("Content-Length", 0))
+            raw = self.rfile.read(length).decode("utf-8") if length else ""
+            try:
+                body = json.loads(raw) if raw else {}
+            except Exception:
+                body = {}
+            try:
+                self._send(200, _handle_dedup(body))
+            except Exception as e:
+                self._send(200, {"ok": False, "error": str(e)})
+            return
+
         skill = SKILL_MAP.get(self.path)
         if not skill:
             self._send(404, {"error": "not found"})
