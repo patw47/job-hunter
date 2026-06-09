@@ -1,0 +1,124 @@
+{
+  "name": "Job Hunter — LinkedIn Playwright Scan",
+  "nodes": [
+    {
+      "id": "schedule-trigger",
+      "name": "Schedule Trigger",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.1,
+      "position": [0, 0],
+      "parameters": {
+        "rule": {
+          "interval": [
+            {
+              "field": "cronExpression",
+              "expression": "30 12 * * *"
+            }
+          ]
+        }
+      }
+    },
+    {
+      "id": "run-linkedin-scraper",
+      "name": "Run LinkedIn Scraper",
+      "type": "n8n-nodes-base.executeCommand",
+      "typeVersion": 1,
+      "position": [220, 0],
+      "parameters": {
+        "command": "LINKEDIN_EMAIL={{ $env.LINKEDIN_EMAIL }} LINKEDIN_PASSWORD={{ $env.LINKEDIN_PASSWORD }} LINKEDIN_SESSION_DIR={{ $env.LINKEDIN_SESSION_DIR ?? '/opt/apps/job-hunter/sessions' }} /home/thehunter/venv/bin/python3 /opt/apps/job-hunter/linkedin_scraper.py"
+      }
+    },
+    {
+      "id": "parse-output",
+      "name": "Parse JSON Output",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [440, 0],
+      "parameters": {
+        "jsCode": "// Parse stdout from the Python scraper\nconst stdout = $input.first().json.stdout || '';\nconst exitCode = $input.first().json.exitCode;\n\n// Exit code 1 = CAPTCHA or error\nif (exitCode !== 0) {\n  const stderr = $input.first().json.stderr || '';\n  const isCaptcha = stderr.toLowerCase().includes('captcha');\n  return [{\n    json: {\n      ok: false,\n      error: isCaptcha ? 'CAPTCHA_DETECTED' : 'SCRAPER_ERROR',\n      stderr: stderr.slice(-500),\n      offers: []\n    }\n  }];\n}\n\nlet offers = [];\ntry {\n  offers = JSON.parse(stdout);\n  if (!Array.isArray(offers)) offers = [];\n} catch (e) {\n  return [{ json: { ok: false, error: 'JSON_PARSE_ERROR', raw: stdout.slice(0, 200), offers: [] } }];\n}\n\nreturn [{ json: { ok: true, count: offers.length, source: 'linkedin', offers } }];"
+      }
+    },
+    {
+      "id": "check-captcha",
+      "name": "IF CAPTCHA",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [660, 0],
+      "parameters": {
+        "conditions": {
+          "options": { "caseSensitive": false },
+          "conditions": [
+            {
+              "id": "captcha-check",
+              "leftValue": "={{ $json.ok }}",
+              "rightValue": true,
+              "operator": { "type": "boolean", "operation": "true" }
+            }
+          ],
+          "combinator": "and"
+        }
+      }
+    },
+    {
+      "id": "notify-captcha",
+      "name": "Notify CAPTCHA",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [880, 120],
+      "parameters": {
+        "method": "POST",
+        "url": "=https://api.telegram.org/bot{{ $env.TELEGRAM_HUNTER_BOT_TOKEN }}/sendMessage",
+        "sendBody": true,
+        "contentType": "json",
+        "body": {
+          "chat_id": "={{ $env.TELEGRAM_HUNTER_CHAT_ID }}",
+          "text": "⚠️ LinkedIn Scraper — CAPTCHA détecté. Le scan a été interrompu. Reconnectez la session manuellement."
+        }
+      }
+    },
+    {
+      "id": "deduplicate-offers",
+      "name": "Deduplicate Offers",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [880, -40],
+      "parameters": {
+        "jsCode": "// Deduplicate by URL — safety net (scraper deduplicates internally)\nconst offers = $input.first().json.offers || [];\nconst seen = new Set();\nconst unique = [];\nfor (const offer of offers) {\n  const key = offer.url || '';\n  if (key && !seen.has(key)) {\n    seen.add(key);\n    unique.push(offer);\n  }\n}\n\nreturn unique.map(offer => ({ json: offer }));"
+      }
+    },
+    {
+      "id": "scan-output",
+      "name": "Scan Output",
+      "type": "n8n-nodes-base.noOp",
+      "typeVersion": 1,
+      "position": [1100, -40],
+      "parameters": {}
+    }
+  ],
+  "connections": {
+    "Schedule Trigger": {
+      "main": [[{ "node": "Run LinkedIn Scraper", "type": "main", "index": 0 }]]
+    },
+    "Run LinkedIn Scraper": {
+      "main": [[{ "node": "Parse JSON Output", "type": "main", "index": 0 }]]
+    },
+    "Parse JSON Output": {
+      "main": [[{ "node": "IF CAPTCHA", "type": "main", "index": 0 }]]
+    },
+    "IF CAPTCHA": {
+      "main": [
+        [{ "node": "Deduplicate Offers", "type": "main", "index": 0 }],
+        [{ "node": "Notify CAPTCHA", "type": "main", "index": 0 }]
+      ]
+    },
+    "Deduplicate Offers": {
+      "main": [[{ "node": "Scan Output", "type": "main", "index": 0 }]]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1"
+  },
+  "meta": {
+    "instanceId": "job-hunter-linkedin-001"
+  }
+}

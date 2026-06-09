@@ -126,6 +126,28 @@ install -m 640 -o $APP_USER -g $APP_GROUP \
     "$SCRIPT_DIR/hunter_server.py" "$APP_DIR/hunter_server.py"
 echo "  ✓ hunter_server.py"
 
+install -m 750 -o $APP_USER -g $APP_GROUP \
+    "$SCRIPT_DIR/linkedin_scraper.py" "$APP_DIR/linkedin_scraper.py"
+echo "  ✓ linkedin_scraper.py"
+
+# Sessions directory for LinkedIn cookie rotation (one file per day)
+install -d -m 700 -o $APP_USER -g $APP_GROUP "$APP_DIR/sessions"
+echo "  ✓ sessions/ directory"
+
+# Install Playwright and Chromium if not already present
+if ! /home/thehunter/venv/bin/python3 -c "import playwright" 2>/dev/null; then
+    echo "  Installing playwright..."
+    sudo -u $APP_USER /home/thehunter/venv/bin/pip install playwright --break-system-packages --quiet 2>/dev/null || \
+        pip install playwright --break-system-packages --quiet
+    echo "  ✓ playwright installed"
+fi
+if ! sudo -u $APP_USER bash -c "PLAYWRIGHT_BROWSERS_PATH=/home/thehunter/.cache/ms-playwright \
+    /home/thehunter/venv/bin/python3 -c 'from playwright.sync_api import sync_playwright; p = sync_playwright().start(); b = p.chromium.launch(); b.close(); p.stop()'" 2>/dev/null; then
+    echo "  Installing Chromium for Playwright..."
+    sudo -u $APP_USER env HOME=$HOME_DIR /home/thehunter/venv/bin/playwright install chromium
+    echo "  ✓ Chromium installed"
+fi
+
 # ── 6. Systemd services ───────────────────────────────────────────────────────
 
 echo "[6/7] Installing systemd services..."
@@ -190,5 +212,7 @@ echo ""
 echo "=== Setup complete ==="
 echo "Next steps:"
 echo "  1. Fill in personal data: workspace/the-hunter/{CV_BASE.md,USER.md,GITHUB_REPOS.md}"
-echo "  2. Send a test Telegram message to validate the bot"
-echo "  3. Run: curl -s -X POST http://127.0.0.1:18798/analyze -H 'Content-Type: application/json' -d '{\"title\":\"AI Engineer\",\"description\":\"Remote LLM Python role\"}'"
+echo "  2. Set LINKEDIN_EMAIL and LINKEDIN_PASSWORD in $APP_DIR/.env"
+echo "  3. Send a test Telegram message to validate the bot"
+echo "  4. Import LinkedIn workflow: n8n import:workflow --input=workflow-linkedin-scan.json && n8n publish:workflow --id=job-hunter-linkedin-001"
+echo "  5. Run: curl -s -X POST http://127.0.0.1:18798/analyze -H 'Content-Type: application/json' -d '{\"title\":\"AI Engineer\",\"description\":\"Remote LLM Python role\"}'"
