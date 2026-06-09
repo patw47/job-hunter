@@ -1,0 +1,103 @@
+name: CI
+
+on:
+  push:
+    branches: ["**"]
+  pull_request:
+    branches: ["**"]
+  workflow_dispatch:
+    inputs:
+      ticket_id:
+        description: "Notion ticket ID to sync QA result to (leave empty to skip)"
+        required: false
+        default: ""
+
+jobs:
+  test:
+    name: tests + QA sync — Python 3.11
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          # Full history so the QA sync step can read the Ticket-Id git trailer
+          # the Dispatcher stamps on agent commits (see "Sync QA result to Notion").
+          fetch-depth: 0
+
+      - name: Set up Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install dependencies
+        run: |
+          if [ -f requirements.txt ]; then
+            pip install -r requirements.txt
+          fi
+          pip install pytest
+
+      - name: Run tests
+        id: pytest
+        # No tests/ suite exists yet (Sprint 0 was infrastructure setup), and the
+        # root-level test_sheets.py is a live Google Sheets smoke test that needs
+        # real credentials, so it is intentionally not collected here. Once unit
+        # tests land under tests/, this step runs them and fails CI on red.
+        run: |
+          set -o pipefail
+          if [ -d tests ] && find tests -name 'test_*.py' -o -name '*_test.py' | grep -q .; then
+            python -m pytest tests/ -v 2>&1 | tee pytest-output.txt
+          else
+            echo "No tests/ suite yet — skipping pytest" | tee pytest-output.txt
+          fi
+
+      - name: Sync QA result to Notion
+        if: always()
+        env:
+          NOTION_API_KEY: ${{ secrets.NOTION_API_KEY }}
+          NOTION_DB_TICKETS_ID: ${{ secrets.NOTION_DB_TICKETS_ID }}
+          NOTION_DB_SPECS_ID: ${{ secrets.NOTION_DB_SPECS_ID }}
+          TELEGRAM_ORCHESTRATION_BOT_TOKEN: ${{ secrets.TELEGRAM_ORCHESTRATION_BOT_TOKEN }}
+          TELEGRAM_ORCHESTRATION_CHAT_ID: ${{ secrets.TELEGRAM_ORCHESTRATION_CHAT_ID }}
+          # Required by gh CLI (TheReviewer) and by the Anthropic API (L2 Haiku call).
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+        run: |
+          # .ticket-id written by the Dispatcher takes precedence over workflow_dispatch input.
+          TICKET_ID=$(cat .ticket-id 2>/dev/null || echo "")
+          if [ -z "$TICKET_ID" ]; then
+            # .ticket-id is git-excluded per worktree so it never reaches this
+            # checkout. Recover the id from the Ticket-Id trailer the Dispatcher
+            # stamps on agent commits (requires fetch-depth: 0 above).
+            TICKET_ID=$(git log -50 --format='%(trailers:key=Ticket-Id,valueonly)' | grep -m1 . || echo "")
+          fi
+          if [ -z "$TICKET_ID" ]; then
+            TICKET_ID="${{ inputs.ticket_id }}"
+          fi
+          if [ -z "$TICKET_ID" ]; then
+            echo "No ticket_id found — skipping Notion sync"
+            exit 0
+          fi
+
+          PR_URL="${{ github.event.pull_request.html_url }}"
+          CI_RUN_URL="${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
+          BRANCH="${{ github.head_ref || github.ref_name }}"
+
+          pip install "git+https://${{ secrets.GH_PAT }}@github.com/patw47/orchestration.git" --quiet
+
+          if [ "${{ steps.pytest.outcome }}" = "success" ]; then
+            python -m orchestration.qa_sync \
+              --ticket-id "$TICKET_ID" \
+              --ci-passed \
+              --pr-url "$PR_URL" \
+              --ci-run-url "$CI_RUN_URL" \
+              --branch "$BRANCH" || true
+          else
+            python -m orchestration.qa_sync \
+              --ticket-id "$TICKET_ID" \
+              --no-ci-passed \
+              --pr-url "" \
+              --ci-run-url "$CI_RUN_URL" \
+              --branch "$BRANCH" \
+              --ci-output-file pytest-output.txt || true
+          fi
