@@ -1,0 +1,23 @@
+[Unit]
+Description=OpenClaw Gateway — the-hunter agent (job-hunter)
+After=network.target network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=thehunter
+Group=apps
+WorkingDirectory=/home/thehunter/.openclaw
+EnvironmentFile=/opt/apps/job-hunter/.env
+Environment=HOME=/home/thehunter
+Environment=PATH=/home/thehunter/.npm-global/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin
+Environment=OPENCLAW_CONFIG_PATH=/home/thehunter/.openclaw/openclaw.json
+ExecStart=/home/thehunter/.npm-global/bin/openclaw serve
+Restart=always
+RestartSec=5
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=openclaw-thehunter
+
+[Install]
+WantedBy=multi-user.target

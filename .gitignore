@@ -9,3 +9,6 @@ CLAUDE.md
 .env
 credentials.json
 n8n-data/
+
+# Generated at deploy time — contains Telegram bot token
+workspace/openclaw.json
