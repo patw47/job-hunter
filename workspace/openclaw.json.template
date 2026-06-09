@@ -1,0 +1,32 @@
+{
+  "workspace": "/home/thehunter/.openclaw/workspace",
+  "channels": {
+    "telegram": {
+      "accounts": {
+        "default": {
+          "botToken": "TELEGRAM_HUNTER_BOT_TOKEN"
+        }
+      }
+    }
+  },
+  "commands": {
+    "ownerAllowFrom": ["TELEGRAM_HUNTER_CHAT_ID"]
+  },
+  "agents": {
+    "the-hunter": {
+      "instructions": "the-hunter/SOUL.md",
+      "context": [
+        "the-hunter/CV_BASE.md",
+        "the-hunter/SKILLS_MASTER.md",
+        "the-hunter/USER.md",
+        "the-hunter/GITHUB_REPOS.md",
+        "the-hunter/KEYWORDS.md",
+        "the-hunter/TOOLS.md",
+        "the-hunter/ARCHITECTURE-VPS.md"
+      ],
+      "skillsDir": "skills",
+      "heartbeat": "the-hunter/HEARTBEAT.md",
+      "model": "anthropic/claude-haiku-4-5-20251001"
+    }
+  }
+}
