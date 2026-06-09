@@ -5,6 +5,8 @@ on:
     branches: ["**"]
   pull_request:
     branches: ["**"]
+    # 'closed' is needed so the close-ticket job below fires on merge.
+    types: [opened, synchronize, reopened, closed]
   workflow_dispatch:
     inputs:
       ticket_id:
@@ -16,6 +18,9 @@ jobs:
   test:
     name: tests + QA sync — Python 3.11
     runs-on: ubuntu-latest
+    # Skip the test+QA-sync job on the close event; the merge is handled by
+    # close-ticket below.
+    if: github.event_name != 'pull_request' || github.event.action != 'closed'
 
     steps:
       - name: Checkout repository
@@ -101,3 +106,30 @@ jobs:
               --branch "$BRANCH" \
               --ci-output-file pytest-output.txt || true
           fi
+
+  close-ticket:
+    name: close ticket on merge
+    runs-on: ubuntu-latest
+    # Fires once a PR is merged — whether from the Telegram button (which runs
+    # `gh pr merge`) or a direct GitHub merge. Both produce this single event, so
+    # the ticket is marked Done + QA green exactly once per path via qa_sync.
+    if: github.event_name == 'pull_request' && github.event.pull_request.merged == true
+
+    steps:
+      - name: Set up Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Mark ticket Done in Notion
+        env:
+          NOTION_API_KEY: ${{ secrets.NOTION_API_KEY }}
+          NOTION_DB_TICKETS_ID: ${{ secrets.NOTION_DB_TICKETS_ID }}
+          NOTION_DB_SPECS_ID: ${{ secrets.NOTION_DB_SPECS_ID }}
+          TELEGRAM_ORCHESTRATION_BOT_TOKEN: ${{ secrets.TELEGRAM_ORCHESTRATION_BOT_TOKEN }}
+          TELEGRAM_ORCHESTRATION_CHAT_ID: ${{ secrets.TELEGRAM_ORCHESTRATION_CHAT_ID }}
+        run: |
+          pip install "git+https://${{ secrets.GH_PAT }}@github.com/patw47/orchestration.git" --quiet
+          python -m orchestration.qa_sync merged \
+            --branch "${{ github.event.pull_request.head.ref }}" \
+            --pr-url "${{ github.event.pull_request.html_url }}" || true
