@@ -1,0 +1,103 @@
+{
+  "id": "job-hunter-telegram-callback-001",
+  "name": "Job Hunter — Telegram Callbacks",
+  "nodes": [
+    {
+      "id": "webhook-trigger",
+      "name": "Telegram Webhook",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 1,
+      "position": [0, 0],
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "telegram-callback",
+        "responseMode": "onReceived",
+        "responseData": "allEntries"
+      }
+    },
+    {
+      "id": "extract-callback",
+      "name": "Extract Callback Data",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [220, 0],
+      "parameters": {
+        "jsCode": "const update = $input.first().json.body ?? $input.first().json;\nconst cq = update.callback_query;\nif (!cq) {\n  // Not a callback_query (e.g. regular message) — skip silently\n  return [{ json: { ok: false, reason: 'no callback_query' } }];\n}\nreturn [{\n  json: {\n    callback_query_id: String(cq.id),\n    callback_data: cq.data ?? '',\n    chat_id: String(cq.message?.chat?.id ?? ''),\n    message_id: cq.message?.message_id ?? null,\n    from_user: cq.from?.username ?? '',\n  }\n}];"
+      }
+    },
+    {
+      "id": "check-has-callback",
+      "name": "Has Callback?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [440, 0],
+      "parameters": {
+        "conditions": {
+          "options": {"caseSensitive": true, "leftValue": "", "typeValidation": "strict"},
+          "conditions": [
+            {
+              "id": "check-ok",
+              "leftValue": "={{ $json.ok }}",
+              "rightValue": false,
+              "operator": {"type": "boolean", "operation": "notEquals"}
+            }
+          ],
+          "combinator": "and"
+        }
+      }
+    },
+    {
+      "id": "route-callback",
+      "name": "Send to Hunter Bridge",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.1,
+      "position": [660, 0],
+      "parameters": {
+        "method": "POST",
+        "url": "http://127.0.0.1:18798/callback",
+        "sendBody": true,
+        "contentType": "json",
+        "jsonBody": "={{ JSON.stringify($json) }}",
+        "options": {
+          "timeout": 30000
+        }
+      }
+    }
+  ],
+  "connections": {
+    "Telegram Webhook": {
+      "main": [
+        [{"node": "Extract Callback Data", "type": "main", "index": 0}]
+      ]
+    },
+    "Extract Callback Data": {
+      "main": [
+        [{"node": "Has Callback?", "type": "main", "index": 0}]
+      ]
+    },
+    "Has Callback?": {
+      "main": [
+        [{"node": "Send to Hunter Bridge", "type": "main", "index": 0}],
+        []
+      ]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1",
+    "saveDataSuccessExecution": "all",
+    "saveExecutionProgress": true,
+    "callerPolicy": "workflowsFromSameOwner"
+  },
+  "staticData": null,
+  "meta": {
+    "templateCredsSetupCompleted": false,
+    "instanceId": "job-hunter",
+    "notes": "Register webhook with Telegram: POST https://api.telegram.org/bot{TOKEN}/setWebhook?url=https://{n8n-domain}/webhook/telegram-callback"
+  },
+  "active": false,
+  "tags": [
+    {"name": "job-hunter"},
+    {"name": "epic-4-notifications-telegram"},
+    {"name": "sprint-2-callbacks"}
+  ]
+}
