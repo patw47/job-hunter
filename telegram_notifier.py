@@ -114,6 +114,65 @@ def _telegram_post(token: str, method: str, payload: dict) -> dict:
         raise
 
 
+def send_digest(offers: list[dict], bot_token: str, chat_id: str) -> None:
+    """Send daily digest for 60-79% match offers, sorted by match rate descending.
+
+    Skips silently if no offers fall in the 60-79% range.
+    """
+
+    def _rate(offer: dict) -> int:
+        r = offer.get("match_rate", 0)
+        if isinstance(r, float) and r <= 1.0:
+            return int(r * 100)
+        return int(r)
+
+    filtered = sorted(
+        [o for o in offers if 60 <= _rate(o) < 80],
+        key=_rate,
+        reverse=True,
+    )
+
+    if not filtered:
+        logger.info("Digest skipped — no 60-79%% offers today")
+        return
+
+    n = len(filtered)
+    text_lines = [f"🎯 THE HUNTER — {n} offre{'s' if n > 1 else ''} aujourd'hui", ""]
+    keyboard_rows: list[list[dict]] = []
+
+    for i, offer in enumerate(filtered, 1):
+        rate = _rate(offer)
+        title_raw = str(offer.get("title", "?"))
+        company_raw = str(offer.get("company", "?"))
+        remote = str(offer.get("remote_type", offer.get("job_type", "Remote"))).capitalize()
+        flag = _flag_emoji(str(offer.get("pays", "")))
+        url = str(offer.get("url", ""))
+        h = _url_hash(url)
+
+        text_lines.append(
+            f"{i}. {rate}% — {_escape_html(title_raw)} @ {_escape_html(company_raw)} {flag} {_escape_html(remote)}"
+        )
+        keyboard_rows.append([
+            {"text": f"{i}. {rate}% — {title_raw} @ {company_raw} {flag}", "callback_data": f"detail:{h}"}
+        ])
+
+    payload = {
+        "chat_id": chat_id,
+        "text": "\n".join(text_lines),
+        "parse_mode": "HTML",
+        "reply_markup": {"inline_keyboard": keyboard_rows},
+        "disable_web_page_preview": True,
+    }
+
+    result = _telegram_post(bot_token, "sendMessage", payload)
+    if result.get("ok"):
+        logger.info("Telegram digest sent: %d offer(s) (60-79%%)", n)
+    else:
+        description = result.get("description", str(result))
+        logger.error("Telegram digest failed: %s", description)
+        raise RuntimeError(f"Telegram API error: {description}")
+
+
 def send_match_card(offer: dict, bot_token: str, chat_id: str) -> None:
     """Send an individual match card for an offer with ≥80% match rate.
 
@@ -144,28 +203,48 @@ def send_match_card(offer: dict, bot_token: str, chat_id: str) -> None:
 
 
 if __name__ == "__main__":
+    import argparse
     import sys
 
     logging.basicConfig(level=logging.INFO, format="%(levelname)s %(name)s: %(message)s")
+
+    parser = argparse.ArgumentParser(description="Telegram notifier CLI")
+    parser.add_argument("--digest", action="store_true", help="Send daily digest (60-79%% offers)")
+    parser.add_argument(
+        "--offers-file",
+        default=os.environ.get("SCORED_OFFERS_FILE", "/opt/apps/job-hunter/workspace/today_scored.json"),
+        help="Path to scored offers JSON (for --digest mode)",
+    )
+    cli_args = parser.parse_args()
 
     token = os.environ.get("TELEGRAM_BOT_TOKEN", "")
     chat_id = os.environ.get("TELEGRAM_CHAT_ID", "")
 
     if not token or not chat_id:
-        print("Usage: TELEGRAM_BOT_TOKEN=... TELEGRAM_CHAT_ID=... python telegram_notifier.py")
+        print("Usage: TELEGRAM_BOT_TOKEN=... TELEGRAM_CHAT_ID=... python telegram_notifier.py [--digest]")
         sys.exit(1)
 
-    test_offer: dict = {
-        "url": "https://example.com/jobs/ai-engineer-acme-12345",
-        "title": "AI Engineer",
-        "company": "Acme Corp",
-        "pays": "FR",
-        "remote_type": "Remote",
-        "match_rate": 85,
-        "keywords_matched": ["Python", "FastAPI", "LangChain", "RAG"],
-        "keywords_missing": ["Kubernetes", "Docker"],
-    }
+    if cli_args.digest:
+        try:
+            with open(cli_args.offers_file) as f:
+                offers_data = json.load(f)
+        except FileNotFoundError:
+            logger.warning("Scored offers file not found: %s — digest skipped", cli_args.offers_file)
+            sys.exit(0)
+        send_digest(offers_data, token, chat_id)
+        print("Done — digest sent (or skipped if no 60-79%% offers).")
+    else:
+        test_offer: dict = {
+            "url": "https://example.com/jobs/ai-engineer-acme-12345",
+            "title": "AI Engineer",
+            "company": "Acme Corp",
+            "pays": "FR",
+            "remote_type": "Remote",
+            "match_rate": 85,
+            "keywords_matched": ["Python", "FastAPI", "LangChain", "RAG"],
+            "keywords_missing": ["Kubernetes", "Docker"],
+        }
 
-    print(f"Sending test card (85%) to chat_id={chat_id} ...")
-    send_match_card(test_offer, token, chat_id)
-    print("Done — check your Telegram.")
+        print(f"Sending test card (85%) to chat_id={chat_id} ...")
+        send_match_card(test_offer, token, chat_id)
+        print("Done — check your Telegram.")
