@@ -315,7 +315,7 @@ async def _search_root(
 async def _random_delay() -> None:
     """Sleep a random duration in [DELAY_MIN, DELAY_MAX] seconds."""
     delay = random.uniform(DELAY_MIN, DELAY_MAX)
-    logger.debug("Delay %.1fs", delay)
+    logger.info("Delay %.1fs", delay)
     await asyncio.sleep(delay)
 
 
