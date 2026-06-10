@@ -1,0 +1,117 @@
+{
+  "id": "job-hunter-notify-main-001",
+  "name": "Job Hunter — Notify (12h30)",
+  "nodes": [
+    {
+      "id": "schedule-trigger",
+      "name": "Schedule Trigger",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.1,
+      "position": [0, 0],
+      "parameters": {
+        "rule": {
+          "interval": [
+            {
+              "field": "cronExpression",
+              "expression": "30 12 * * *"
+            }
+          ]
+        }
+      }
+    },
+    {
+      "id": "read-pending-matches",
+      "name": "Read PENDING_MATCHES",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [240, 0],
+      "parameters": {
+        "method": "GET",
+        "url": "=http://127.0.0.1:{{ $env.HUNTER_BRIDGE_PORT ?? '18798' }}/sheets/pending-matches",
+        "options": {
+          "timeout": 30000,
+          "response": {
+            "response": {
+              "responseFormat": "json"
+            }
+          }
+        }
+      }
+    },
+    {
+      "id": "prepare-telegram-messages",
+      "name": "Prepare Telegram Messages",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [480, 0],
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "jsCode": "const result = $input.first().json;\nconst offers = result.offers || [];\nconst CHAT_ID = $env.TELEGRAM_HUNTER_CHAT_ID;\nconst HIGH_THRESHOLD = 80.0;\n\nconst messages = [];\n\nconst highOffers = offers.filter(o => parseFloat(o.match_rate) >= HIGH_THRESHOLD);\nfor (const offer of highOffers) {\n  const rate = parseFloat(offer.match_rate);\n  const skills = (offer.skills_found || '').trim();\n  const skillsLine = skills ? '\\nSkills : ' + skills : '';\n  const text = '🎯 *' + offer.title + '* — ' + offer.company +\n    '\\n📍 ' + offer.location +\n    '\\n🔗 ' + offer.url +\n    '\\n\\n*Match* : ' + rate + '%' + skillsLine;\n  messages.push({\n    json: {\n      type: 'card',\n      telegram_payload: {\n        chat_id: CHAT_ID,\n        text,\n        parse_mode: 'Markdown',\n        reply_markup: {\n          inline_keyboard: [[\n            { text: '✅ Générer', callback_data: 'hunter:gen:' + offer.job_id },\n            { text: '⏰ Snooze', callback_data: 'hunter:snooze:' + offer.job_id },\n            { text: '❌ Ignorer', callback_data: 'hunter:ignore:' + offer.job_id }\n          ]]\n        }\n      }\n    }\n  });\n}\n\nconst lowOffers = offers.filter(o => {\n  const r = parseFloat(o.match_rate);\n  return r >= 60.0 && r < HIGH_THRESHOLD;\n});\nif (lowOffers.length > 0) {\n  const lines = lowOffers.map(o => '• ' + o.match_rate + '% — *' + o.title + '* @ ' + o.company);\n  const text = '📋 *Digest du jour — ' + lowOffers.length + ' offre' + (lowOffers.length > 1 ? 's' : '') + '*\\n\\n' + lines.join('\\n');\n  messages.push({\n    json: {\n      type: 'digest',\n      telegram_payload: {\n        chat_id: CHAT_ID,\n        text,\n        parse_mode: 'Markdown'\n      }\n    }\n  });\n}\n\nreturn messages;"
+      }
+    },
+    {
+      "id": "send-message",
+      "name": "Send Message",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [720, 0],
+      "parameters": {
+        "method": "POST",
+        "url": "=https://api.telegram.org/bot{{ $env.TELEGRAM_HUNTER_BOT_TOKEN }}/sendMessage",
+        "sendBody": true,
+        "contentType": "raw",
+        "rawContentType": "application/json",
+        "body": "={{ JSON.stringify($json.telegram_payload) }}",
+        "options": {
+          "timeout": 10000,
+          "response": {
+            "response": {
+              "responseFormat": "json"
+            }
+          }
+        }
+      }
+    },
+    {
+      "id": "notify-complete",
+      "name": "Notify Complete",
+      "type": "n8n-nodes-base.noOp",
+      "typeVersion": 1,
+      "position": [960, 0],
+      "parameters": {}
+    }
+  ],
+  "connections": {
+    "Schedule Trigger": {
+      "main": [[{ "node": "Read PENDING_MATCHES", "type": "main", "index": 0 }]]
+    },
+    "Read PENDING_MATCHES": {
+      "main": [[{ "node": "Prepare Telegram Messages", "type": "main", "index": 0 }]]
+    },
+    "Prepare Telegram Messages": {
+      "main": [[{ "node": "Send Message", "type": "main", "index": 0 }]]
+    },
+    "Send Message": {
+      "main": [[{ "node": "Notify Complete", "type": "main", "index": 0 }]]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1",
+    "saveDataSuccessExecution": "all",
+    "saveExecutionProgress": true,
+    "callerPolicy": "workflowsFromSameOwner",
+    "errorWorkflow": "job-hunter-error-notify-001"
+  },
+  "staticData": null,
+  "meta": {
+    "templateCredsSetupCompleted": false,
+    "instanceId": "job-hunter"
+  },
+  "active": false,
+  "tags": [
+    { "name": "job-hunter" },
+    { "name": "epic-7-n8n-orchestration" },
+    { "name": "sprint-1" },
+    { "name": "sprint-2" }
+  ]
+}

@@ -235,5 +235,248 @@ class TestSkillMdFrontmatter(unittest.TestCase):
                 )
 
 
+# ── _handle_read_pending_matches ──────────────────────────────────────────────
+
+
+class TestHandleReadPendingMatches(unittest.TestCase):
+    def _mock_gc(self, rows):
+        mock_gc = MagicMock()
+        mock_ss = mock_gc.open.return_value
+        mock_sheet = mock_ss.worksheet.return_value
+        mock_sheet.get_all_values.return_value = rows
+        return mock_gc
+
+    @patch("gspread.service_account")
+    def test_happy_path_two_offers(self, mock_sa):
+        rows = [
+            ["job1", "10.06.2026", "Dev Python", "Corp A", "Paris", "https://ex.com/1", "80.0", "python, llm", "indeed", "1"],
+            ["job2", "10.06.2026", "Data Eng", "Corp B", "Lyon", "https://ex.com/2", "65.0", "sql", "linkedin", "2"],
+        ]
+        mock_sa.return_value = self._mock_gc(rows)
+        result = hs._handle_read_pending_matches()
+        assert result["ok"] is True
+        assert result["count"] == 2
+        assert len(result["offers"]) == 2
+        assert result["snoozed_count"] == 0
+
+    @patch("gspread.service_account")
+    def test_snooze_future_excluded(self, mock_sa):
+        rows = [
+            ["job1", "10.06.2026", "Dev Python", "Corp A", "Paris", "https://ex.com/1", "80.0", "python", "indeed", "1", "01.01.2099"],
+        ]
+        mock_sa.return_value = self._mock_gc(rows)
+        result = hs._handle_read_pending_matches()
+        assert result["count"] == 0
+        assert result["snoozed_count"] == 1
+
+    @patch("gspread.service_account")
+    def test_snooze_past_included(self, mock_sa):
+        rows = [
+            ["job1", "10.06.2026", "Dev Python", "Corp A", "Paris", "https://ex.com/1", "80.0", "python", "indeed", "1", "01.01.2020"],
+        ]
+        mock_sa.return_value = self._mock_gc(rows)
+        result = hs._handle_read_pending_matches()
+        assert result["count"] == 1
+        assert result["snoozed_count"] == 0
+
+    @patch("gspread.service_account")
+    def test_empty_sheet(self, mock_sa):
+        mock_sa.return_value = self._mock_gc([])
+        result = hs._handle_read_pending_matches()
+        assert result["ok"] is True
+        assert result["count"] == 0
+        assert result["offers"] == []
+
+    @patch("gspread.service_account")
+    def test_header_row_skipped(self, mock_sa):
+        rows = [
+            ["job_id", "date_scanned", "title", "company", "location", "url", "match_rate", "skills_found", "source", "rank"],
+            ["job1", "10.06.2026", "Dev Python", "Corp A", "Paris", "https://ex.com/1", "80.0", "python", "indeed", "1"],
+        ]
+        mock_sa.return_value = self._mock_gc(rows)
+        result = hs._handle_read_pending_matches()
+        assert result["count"] == 1
+
+    @patch("gspread.service_account")
+    def test_route_get(self, mock_sa):
+        mock_sa.return_value = self._mock_gc([])
+        code, body = _make_request("GET", "/sheets/pending-matches")
+        assert code == 200
+        assert body["ok"] is True
+
+
+# ── _handle_update_status ─────────────────────────────────────────────────────
+
+
+class TestHandleUpdateStatus(unittest.TestCase):
+    def _mock_gc_with_cell(self, found_row=None):
+        mock_gc = MagicMock()
+        mock_ss = mock_gc.open.return_value
+        mock_sheet = mock_ss.worksheet.return_value
+        if found_row is not None:
+            mock_cell = MagicMock()
+            mock_cell.row = found_row
+            mock_sheet.find.return_value = mock_cell
+        else:
+            mock_sheet.find.return_value = None
+        return mock_gc, mock_sheet
+
+    @patch("gspread.service_account")
+    def test_happy_path(self, mock_sa):
+        mock_gc, mock_sheet = self._mock_gc_with_cell(found_row=3)
+        mock_sa.return_value = mock_gc
+        result = hs._handle_update_status({"job_id": "abc123", "status": "ignored"})
+        assert result["ok"] is True
+        assert result["updated"] is True
+        mock_sheet.update_cell.assert_called_once_with(3, 11, "ignored")
+
+    @patch("gspread.service_account")
+    def test_job_id_not_found(self, mock_sa):
+        mock_gc, _ = self._mock_gc_with_cell(found_row=None)
+        mock_sa.return_value = mock_gc
+        result = hs._handle_update_status({"job_id": "notexist", "status": "ignored"})
+        assert result["ok"] is True
+        assert result["updated"] is False
+
+    def test_missing_job_id(self):
+        result = hs._handle_update_status({"status": "ignored"})
+        assert result["ok"] is False
+
+    def test_missing_status(self):
+        result = hs._handle_update_status({"job_id": "abc123"})
+        assert result["ok"] is False
+
+    @patch("gspread.service_account")
+    def test_route_post(self, mock_sa):
+        mock_gc, _ = self._mock_gc_with_cell(found_row=3)
+        mock_sa.return_value = mock_gc
+        code, body = _make_request("POST", "/sheets/update-status", {"job_id": "abc", "status": "ignored"})
+        assert code == 200
+        assert body["ok"] is True
+
+
+# ── _handle_snooze ────────────────────────────────────────────────────────────
+
+
+class TestHandleSnooze(unittest.TestCase):
+    def _mock_gc_with_cell(self, found_row=None):
+        mock_gc = MagicMock()
+        mock_ss = mock_gc.open.return_value
+        mock_sheet = mock_ss.worksheet.return_value
+        if found_row is not None:
+            mock_cell = MagicMock()
+            mock_cell.row = found_row
+            mock_sheet.find.return_value = mock_cell
+        else:
+            mock_sheet.find.return_value = None
+        return mock_gc, mock_sheet
+
+    @patch("gspread.service_account")
+    def test_explicit_snooze_until(self, mock_sa):
+        mock_gc, mock_sheet = self._mock_gc_with_cell(found_row=5)
+        mock_sa.return_value = mock_gc
+        result = hs._handle_snooze({"job_id": "abc123", "snooze_until": "20.06.2026"})
+        assert result["ok"] is True
+        assert result["snoozed_until"] == "20.06.2026"
+        mock_sheet.update_cell.assert_called_once_with(5, 11, "20.06.2026")
+
+    @patch("gspread.service_account")
+    def test_default_snooze_is_tomorrow(self, mock_sa):
+        from datetime import datetime as _dt, timedelta
+        mock_gc, _ = self._mock_gc_with_cell(found_row=5)
+        mock_sa.return_value = mock_gc
+        result = hs._handle_snooze({"job_id": "abc123"})
+        assert result["ok"] is True
+        expected = (_dt.now() + timedelta(days=1)).strftime("%d.%m.%Y")
+        assert result["snoozed_until"] == expected
+
+    @patch("gspread.service_account")
+    def test_job_id_not_found(self, mock_sa):
+        mock_gc, _ = self._mock_gc_with_cell(found_row=None)
+        mock_sa.return_value = mock_gc
+        result = hs._handle_snooze({"job_id": "notexist"})
+        assert result["ok"] is False
+
+    def test_missing_job_id(self):
+        result = hs._handle_snooze({})
+        assert result["ok"] is False
+
+    @patch("gspread.service_account")
+    def test_route_post(self, mock_sa):
+        mock_gc, _ = self._mock_gc_with_cell(found_row=5)
+        mock_sa.return_value = mock_gc
+        code, body = _make_request("POST", "/sheets/snooze", {"job_id": "abc", "snooze_until": "20.06.2026"})
+        assert code == 200
+        assert body["ok"] is True
+
+
+# ── _handle_generate ──────────────────────────────────────────────────────────
+
+
+class TestHandleGenerate(unittest.TestCase):
+    _MATCH_ROW = [
+        "jobA", "10.06.2026", "ML Eng", "Corp X", "Paris", "yes",
+        "https://ex.com/1", "linkedin", "80.0", "python, ml", "pending", "", "",
+    ]
+
+    def _mock_gc(self, found_row=None, row_values=None):
+        mock_gc = MagicMock()
+        mock_ss = mock_gc.open.return_value
+        mock_sheet = mock_ss.worksheet.return_value
+        if found_row is not None:
+            mock_cell = MagicMock()
+            mock_cell.row = found_row
+            mock_sheet.find.return_value = mock_cell
+            mock_sheet.row_values.return_value = row_values or []
+        else:
+            mock_sheet.find.return_value = None
+        return mock_gc, mock_sheet
+
+    @patch("pathlib.Path")
+    @patch("gspread.service_account")
+    @patch.object(hs, "call_hunter", return_value=json.dumps({"result": {"finalAssistantVisibleText": "Generated text"}}))
+    def test_happy_path(self, mock_call, mock_sa, MockPath):
+        mock_gc, mock_sheet = self._mock_gc(found_row=2, row_values=self._MATCH_ROW)
+        mock_sa.return_value = mock_gc
+        result = hs._handle_generate({"job_id": "jobA"})
+        assert result["ok"] is True
+        assert result["job_id"] == "jobA"
+        assert "cv_path" in result
+        assert "letter_path" in result
+        assert mock_call.call_count == 2
+        MockPath.return_value.mkdir.assert_called_once_with(parents=True, exist_ok=True)
+
+    @patch("gspread.service_account")
+    def test_job_id_not_found(self, mock_sa):
+        mock_gc, _ = self._mock_gc(found_row=None)
+        mock_sa.return_value = mock_gc
+        result = hs._handle_generate({"job_id": "notexist"})
+        assert result["ok"] is False
+        assert "not found" in result["error"]
+
+    def test_missing_job_id(self):
+        result = hs._handle_generate({})
+        assert result["ok"] is False
+
+    @patch("pathlib.Path")
+    @patch("gspread.service_account")
+    @patch.object(hs, "call_hunter", side_effect=RuntimeError("LLM timeout"))
+    def test_generate_failure_propagated(self, mock_call, mock_sa, MockPath):
+        mock_gc, _ = self._mock_gc(found_row=2, row_values=self._MATCH_ROW)
+        mock_sa.return_value = mock_gc
+        result = hs._handle_generate({"job_id": "jobA"})
+        assert result["ok"] is False
+
+    @patch("pathlib.Path")
+    @patch("gspread.service_account")
+    @patch.object(hs, "call_hunter", return_value=json.dumps({"result": {"finalAssistantVisibleText": "Generated"}}))
+    def test_route_post(self, mock_call, mock_sa, MockPath):
+        mock_gc, _ = self._mock_gc(found_row=2, row_values=self._MATCH_ROW)
+        mock_sa.return_value = mock_gc
+        code, body = _make_request("POST", "/generate", {"job_id": "jobA"})
+        assert code == 200
+        assert body["ok"] is True
+
+
 if __name__ == "__main__":
     unittest.main()
