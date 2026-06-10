@@ -9,7 +9,7 @@ metadata.openclaw.model: "anthropic/claude-sonnet-4-6"
 
 ## What This Skill Does
 
-Génère une lettre de motivation courte (300-400 mots) adaptée à l'offre cible et à la culture de l'entreprise.
+Génère une lettre de motivation courte (250-350 mots) adaptée à l'offre cible et à la culture de l'entreprise.
 Ton professionnel mais personnel, sans langue de bois.
 
 ## When To Use It
@@ -64,7 +64,7 @@ Patricia Wintrebert
 
 ## Rules
 
-- Longueur : 300-400 mots maximum.
+- Longueur : 250-350 mots.
 - Langue : identique à `language` dans l'input.
 - Pas de généricités vides ("Je suis passionnée par l'innovation"). Résultats concrets.
 - Nommer l'entreprise et le rôle exactement tels qu'ils apparaissent dans l'offre.
