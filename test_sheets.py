@@ -149,7 +149,7 @@ def phase2_open(r: Results, gc: gspread.Client, creds: dict[str, Any]) -> gsprea
         return None
 
 
-def test_tab(r: Results, spreadsheet: gspread.Spreadsheet, tab_name: str) -> None:
+def _check_tab(r: Results, spreadsheet: gspread.Spreadsheet, tab_name: str) -> None:
     """Run phases 3–7 for one tab: existence, headers, write, read-back, cleanup."""
     expected = HEADERS[tab_name]
     print(f"\n--- {tab_name} ---")
@@ -256,7 +256,7 @@ def main() -> int:
         return 1
 
     for tab in ("MATCHES", "SCANNED_HASHES", "PENDING_MATCHES"):
-        test_tab(r, spreadsheet, tab)
+        _check_tab(r, spreadsheet, tab)
 
     print(f"\n{r.summary()}")
     return 1 if r.failed > 0 else 0
