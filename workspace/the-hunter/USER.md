@@ -81,6 +81,15 @@ Ces réponses sont utilisées par le skill `form-answerer` pour remplir les form
 ### Expérience en AI/LLM
 "[FILL IN — résumé 2-3 phrases de ton expérience concrète avec LLM, agents, RAG, etc.]"
 
+### Années d'expérience
+"[FILL IN — ex: 10+ ans d'expérience en développement logiciel et systèmes AI/ML]"
+
+### Expérience Python
+"[FILL IN — ex: 10+ ans de Python en production : ML pipelines, systèmes RAG, APIs FastAPI, scripting DevOps]"
+
+### Droit de travail en Suisse
+"[FILL IN — ex: Citoyenne française résidant en Valais (Suisse) — Permis B / Permis C / double nationalité EU]"
+
 ---
 
 ## Préférences de communication

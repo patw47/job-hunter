@@ -693,5 +693,321 @@ class TestCoverLetterEndpoint(unittest.TestCase):
         assert r.status_code == 200
 
 
+# ── parse_answers_wrapper ─────────────────────────────────────────────────────
+
+
+def _fake_openclaw_form_stdout(answers: list) -> str:
+    body = json.dumps({"answers": answers})
+    return json.dumps({"result": {"finalAssistantVisibleText": f"[ANSWERS_START]\n{body}\n[ANSWERS_END]"}})
+
+
+class TestParseAnswersWrapper(unittest.TestCase):
+    def test_happy_path(self) -> None:
+        raw = '[ANSWERS_START]\n{"answers": [{"id": "q1", "answer": "Yes", "source": "generated"}]}\n[ANSWERS_END]'
+        result = hb.parse_answers_wrapper(raw)
+        assert result == [{"id": "q1", "answer": "Yes", "source": "generated"}]
+
+    def test_empty_answers_list(self) -> None:
+        raw = '[ANSWERS_START]\n{"answers": []}\n[ANSWERS_END]'
+        assert hb.parse_answers_wrapper(raw) == []
+
+    def test_multiple_answers(self) -> None:
+        answers = [{"id": "q1", "answer": "A1", "source": "generated"}, {"id": "q2", "answer": "A2", "source": "generated"}]
+        raw = f'[ANSWERS_START]\n{json.dumps({"answers": answers})}\n[ANSWERS_END]'
+        result = hb.parse_answers_wrapper(raw)
+        assert len(result) == 2
+        assert result[0]["id"] == "q1"
+        assert result[1]["id"] == "q2"
+
+    def test_extra_content_outside_ignored(self) -> None:
+        raw = 'preamble\n[ANSWERS_START]\n{"answers": []}\n[ANSWERS_END]\npostamble'
+        assert hb.parse_answers_wrapper(raw) == []
+
+    def test_missing_start_raises(self) -> None:
+        with self.assertRaises(ValueError) as ctx:
+            hb.parse_answers_wrapper('{"answers": []}\n[ANSWERS_END]')
+        assert "[ANSWERS_START]" in str(ctx.exception)
+
+    def test_missing_end_raises(self) -> None:
+        with self.assertRaises(ValueError) as ctx:
+            hb.parse_answers_wrapper('[ANSWERS_START]\n{"answers": []}')
+        assert "[ANSWERS_END]" in str(ctx.exception)
+
+    def test_invalid_json_raises(self) -> None:
+        with self.assertRaises(json.JSONDecodeError):
+            hb.parse_answers_wrapper('[ANSWERS_START]\nnot json\n[ANSWERS_END]')
+
+
+# ── _match_precalibrated ──────────────────────────────────────────────────────
+
+
+_FILLED_USER_ANSWERS: dict[str, str] = {
+    "Prétentions salariales": "Mes prétentions sont de 90K€.",
+    "Disponibilité": "Immédiatement.",
+    "Télétravail": "Remote total depuis 3 ans.",
+    "Expérience Python": "10+ ans de Python en production.",
+    "Années d'expérience": "10+ ans d'expérience.",
+    "Droit de travail en Suisse": "Permis B Suisse.",
+}
+
+
+class TestMatchPrecalibrated(unittest.TestCase):
+    def test_salary_en(self) -> None:
+        result = hb._match_precalibrated("What is your salary expectation?", _FILLED_USER_ANSWERS)
+        assert result == "Mes prétentions sont de 90K€."
+
+    def test_salary_fr(self) -> None:
+        result = hb._match_precalibrated("Quelles sont vos prétentions salariales ?", _FILLED_USER_ANSWERS)
+        assert result == "Mes prétentions sont de 90K€."
+
+    def test_availability_matched(self) -> None:
+        result = hb._match_precalibrated("When are you available to start?", _FILLED_USER_ANSWERS)
+        assert result == "Immédiatement."
+
+    def test_remote_matched(self) -> None:
+        result = hb._match_precalibrated("Do you have remote work experience?", _FILLED_USER_ANSWERS)
+        assert result == "Remote total depuis 3 ans."
+
+    def test_python_experience_matched(self) -> None:
+        result = hb._match_precalibrated("How many years of Python experience do you have?", _FILLED_USER_ANSWERS)
+        assert result is not None
+
+    def test_years_experience_matched(self) -> None:
+        result = hb._match_precalibrated("How many years of experience do you have?", _FILLED_USER_ANSWERS)
+        assert result is not None
+
+    def test_right_to_work_matched(self) -> None:
+        result = hb._match_precalibrated("Do you have the right to work in Switzerland?", _FILLED_USER_ANSWERS)
+        assert result == "Permis B Suisse."
+
+    def test_open_question_not_matched(self) -> None:
+        result = hb._match_precalibrated("Why do you want to work at Acme?", _FILLED_USER_ANSWERS)
+        assert result is None
+
+    def test_case_insensitive(self) -> None:
+        result = hb._match_precalibrated("SALARY EXPECTATIONS", _FILLED_USER_ANSWERS)
+        assert result == "Mes prétentions sont de 90K€."
+
+    def test_missing_section_in_dict_returns_none(self) -> None:
+        result = hb._match_precalibrated("What is your salary?", {})
+        assert result is None
+
+
+# ── _parse_user_md_precal ─────────────────────────────────────────────────────
+
+
+class TestParseUserMdPrecal(unittest.TestCase):
+    def _tmp_path(self, content: str) -> Path:
+        import tempfile
+        tmp = Path(tempfile.mktemp(suffix=".md"))
+        tmp.write_text(content, encoding="utf-8")
+        return tmp
+
+    def test_filled_section_returned(self) -> None:
+        content = (
+            "## Réponses pré-calibrées aux questions fréquentes\n\n"
+            '### Disponibilité\n"Immédiatement."\n\n'
+            '### Prétentions salariales\n"90K€ brut/an."\n\n'
+            "## Autre section\n"
+        )
+        path = self._tmp_path(content)
+        result = hb._parse_user_md_precal(path)
+        path.unlink()
+        assert result["Disponibilité"] == "Immédiatement."
+        assert result["Prétentions salariales"] == "90K€ brut/an."
+
+    def test_fill_in_section_excluded(self) -> None:
+        content = (
+            "## Réponses pré-calibrées aux questions fréquentes\n\n"
+            '### Disponibilité\n"[FILL IN — ex: immédiatement]"\n\n'
+            '### Prétentions salariales\n"90K€ brut/an."\n'
+        )
+        path = self._tmp_path(content)
+        result = hb._parse_user_md_precal(path)
+        path.unlink()
+        assert "Disponibilité" not in result
+        assert result["Prétentions salariales"] == "90K€ brut/an."
+
+    def test_file_not_found_returns_empty(self) -> None:
+        result = hb._parse_user_md_precal(Path("/nonexistent/USER.md"))
+        assert result == {}
+
+    def test_no_precal_section_returns_empty(self) -> None:
+        content = "# User Profile\n\n## Profil\nNo precal section.\n"
+        path = self._tmp_path(content)
+        result = hb._parse_user_md_precal(path)
+        path.unlink()
+        assert result == {}
+
+
+# ── POST /form-answers (FastAPI TestClient) ───────────────────────────────────
+
+
+@unittest.skipUnless(_HAS_FASTAPI_TEST, "fastapi[testclient] not installed")
+class TestFormAnswersEndpoint(unittest.TestCase):
+    def setUp(self) -> None:
+        from fastapi.testclient import TestClient
+        hb._fa_rate_limiter.reset()
+        hb._cv_rate_limiter.reset()
+        hb._cl_rate_limiter.reset()
+        self.client = TestClient(hb.app)
+
+    def _mock_openclaw(self, answers: list | None = None) -> MagicMock:
+        if answers is None:
+            answers = [{"id": "q1", "answer": "Because I love AI.", "source": "generated"}]
+        mock_proc = MagicMock()
+        mock_proc.stdout = _fake_openclaw_form_stdout(answers)
+        return mock_proc
+
+    def _valid_payload(self, **overrides) -> dict:
+        base: dict = {
+            "questions": [{"id": "q1", "label": "Why do you want to work here?", "type": "textarea"}],
+            "offer_description": "AI Engineer at Acme AI, remote-first.",
+            "company": "Acme AI",
+            "title": "AI Engineer",
+        }
+        base.update(overrides)
+        return base
+
+    def test_empty_questions_no_subprocess(self) -> None:
+        payload = self._valid_payload(questions=[])
+        with patch("subprocess.run") as mock_run:
+            r = self.client.post("/form-answers", json=payload)
+        assert r.status_code == 200
+        body = r.json()
+        assert body["ok"] is True
+        assert body["answers"] == []
+        mock_run.assert_not_called()
+
+    def test_all_precalibrated_no_subprocess(self) -> None:
+        payload = self._valid_payload(questions=[
+            {"id": "q_sal", "label": "What is your salary expectation?", "type": "text"},
+            {"id": "q_avail", "label": "When are you available to start?", "type": "text"},
+        ])
+        with patch("subprocess.run") as mock_run, \
+             patch.object(hb, "_parse_user_md_precal", return_value=_FILLED_USER_ANSWERS):
+            r = self.client.post("/form-answers", json=payload)
+        assert r.status_code == 200
+        body = r.json()
+        assert body["ok"] is True
+        assert all(a["source"] == "precalibrated" for a in body["answers"])
+        mock_run.assert_not_called()
+
+    def test_all_generated_subprocess_called(self) -> None:
+        with patch("subprocess.run", return_value=self._mock_openclaw()) as mock_run, \
+             patch.object(hb, "_parse_user_md_precal", return_value=_FILLED_USER_ANSWERS):
+            r = self.client.post("/form-answers", json=self._valid_payload())
+        assert r.status_code == 200
+        body = r.json()
+        assert body["ok"] is True
+        assert body["answers"][0]["source"] == "generated"
+        mock_run.assert_called_once()
+
+    def test_mixed_precal_and_generated(self) -> None:
+        payload = self._valid_payload(questions=[
+            {"id": "q_sal", "label": "What is your salary expectation?", "type": "text"},
+            {"id": "q_why", "label": "Why do you want to work here?", "type": "textarea"},
+        ])
+        generated = [{"id": "q_why", "answer": "Because I love AI.", "source": "generated"}]
+        with patch("subprocess.run", return_value=self._mock_openclaw(generated)) as mock_run, \
+             patch.object(hb, "_parse_user_md_precal", return_value=_FILLED_USER_ANSWERS):
+            r = self.client.post("/form-answers", json=payload)
+        assert r.status_code == 200
+        body = r.json()
+        assert body["ok"] is True
+        assert len(body["answers"]) == 2
+        sources = {a["id"]: a["source"] for a in body["answers"]}
+        assert sources["q_sal"] == "precalibrated"
+        assert sources["q_why"] == "generated"
+
+    def test_mixed_subprocess_payload_contains_only_unmatched(self) -> None:
+        payload = self._valid_payload(questions=[
+            {"id": "q_sal", "label": "What is your salary expectation?", "type": "text"},
+            {"id": "q_why", "label": "Why do you want to work here?", "type": "textarea"},
+        ])
+        generated = [{"id": "q_why", "answer": "Because I love AI.", "source": "generated"}]
+        with patch("subprocess.run", return_value=self._mock_openclaw(generated)) as mock_run, \
+             patch.object(hb, "_parse_user_md_precal", return_value=_FILLED_USER_ANSWERS):
+            self.client.post("/form-answers", json=payload)
+        call_cmd = " ".join(mock_run.call_args[0][0])
+        assert "q_why" in call_cmd
+        assert "q_sal" not in call_cmd
+
+    def test_response_ids_match_input(self) -> None:
+        payload = self._valid_payload(questions=[
+            {"id": "unique_xyz", "label": "Describe a challenging project.", "type": "textarea"},
+        ])
+        generated = [{"id": "unique_xyz", "answer": "Built a RAG pipeline.", "source": "generated"}]
+        with patch("subprocess.run", return_value=self._mock_openclaw(generated)), \
+             patch.object(hb, "_parse_user_md_precal", return_value={}):
+            r = self.client.post("/form-answers", json=payload)
+        assert r.json()["answers"][0]["id"] == "unique_xyz"
+
+    def test_timeout_returns_ok_false(self) -> None:
+        with patch("subprocess.run", side_effect=subprocess.TimeoutExpired("openclaw", 600)), \
+             patch.object(hb, "_parse_user_md_precal", return_value={}):
+            r = self.client.post("/form-answers", json=self._valid_payload())
+        body = r.json()
+        assert body["ok"] is False
+        assert "timeout" in body["error"]
+
+    def test_missing_markers_returns_error(self) -> None:
+        mock_proc = MagicMock()
+        mock_proc.stdout = json.dumps({"result": {"finalAssistantVisibleText": "raw text no markers"}})
+        with patch("subprocess.run", return_value=mock_proc), \
+             patch.object(hb, "_parse_user_md_precal", return_value={}):
+            r = self.client.post("/form-answers", json=self._valid_payload())
+        body = r.json()
+        assert body["ok"] is False
+        assert "ANSWERS_START" in body["error"]
+
+    def test_language_fr_detected_in_brief(self) -> None:
+        payload = self._valid_payload(
+            offer_description="Nous recherchons notre candidat pour notre poste en France."
+        )
+        with patch("subprocess.run", return_value=self._mock_openclaw()) as mock_run, \
+             patch.object(hb, "_parse_user_md_precal", return_value={}):
+            self.client.post("/form-answers", json=payload)
+        call_cmd = " ".join(mock_run.call_args[0][0])
+        assert '"language": "fr"' in call_cmd
+
+    def test_language_override_in_brief(self) -> None:
+        payload = self._valid_payload(language="de")
+        with patch("subprocess.run", return_value=self._mock_openclaw()) as mock_run, \
+             patch.object(hb, "_parse_user_md_precal", return_value={}):
+            self.client.post("/form-answers", json=payload)
+        call_cmd = " ".join(mock_run.call_args[0][0])
+        assert '"language": "de"' in call_cmd
+
+    def test_rate_limit_429(self) -> None:
+        empty_payload = self._valid_payload(questions=[])
+        for _ in range(20):
+            r = self.client.post("/form-answers", json=empty_payload)
+            assert r.status_code == 200
+        r = self.client.post("/form-answers", json=empty_payload)
+        assert r.status_code == 429
+
+    def test_missing_questions_field_422(self) -> None:
+        r = self.client.post("/form-answers", json={"offer_description": "AI engineer at Acme"})
+        assert r.status_code == 422
+
+    def test_missing_offer_description_422(self) -> None:
+        r = self.client.post("/form-answers", json={"questions": []})
+        assert r.status_code == 422
+
+    def test_response_shape(self) -> None:
+        with patch("subprocess.run", return_value=self._mock_openclaw()), \
+             patch.object(hb, "_parse_user_md_precal", return_value={}):
+            r = self.client.post("/form-answers", json=self._valid_payload())
+        body = r.json()
+        assert "ok" in body
+        assert "answers" in body
+        assert "error" in body
+        for ans in body["answers"]:
+            assert "id" in ans
+            assert "answer" in ans
+            assert "source" in ans
+
+
 if __name__ == "__main__":
     unittest.main()

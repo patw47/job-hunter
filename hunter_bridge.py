@@ -6,6 +6,7 @@ Routes:
   GET  /health         -- healthcheck
   POST /rewrite-cv     -- cv-rewriter skill (Sonnet), rate-limited to 5/hour
   POST /cover-letter   -- cover-letter-writer skill (Sonnet), rate-limited to 5/hour
+  POST /form-answers   -- form-answerer skill (Haiku), pre-calibrated lookup + LLM fallback, rate-limited to 20/hour
 """
 from __future__ import annotations
 
@@ -43,6 +44,7 @@ LM_OUTPUT_DIR: Final[Path] = Path(
 AGENT_ID: Final[str] = "the-hunter"
 SKILL_NAME: Final[str] = "cv-rewriter"
 COVER_LETTER_SKILL_NAME: Final[str] = "cover-letter-writer"
+FORM_ANSWERER_SKILL_NAME: Final[str] = "form-answerer"
 OPENCLAW_TIMEOUT: Final[int] = 600
 
 RATE_LIMIT_MAX: Final[int] = 5
@@ -159,6 +161,8 @@ class _RateLimiter:
 
 _cv_rate_limiter = _RateLimiter(RATE_LIMIT_MAX, RATE_LIMIT_WINDOW)
 _cl_rate_limiter = _RateLimiter(RATE_LIMIT_MAX, RATE_LIMIT_WINDOW)
+_FA_RATE_LIMIT_MAX: Final[int] = 20
+_fa_rate_limiter = _RateLimiter(_FA_RATE_LIMIT_MAX, RATE_LIMIT_WINDOW)
 
 # ── CV parsing ────────────────────────────────────────────────────────────────
 
@@ -166,6 +170,8 @@ _CV_START: Final[str] = "[CV_START]"
 _CV_END: Final[str] = "[CV_END]"
 _LETTER_START: Final[str] = "[LETTER_START]"
 _LETTER_END: Final[str] = "[LETTER_END]"
+_ANSWERS_START: Final[str] = "[ANSWERS_START]"
+_ANSWERS_END: Final[str] = "[ANSWERS_END]"
 
 
 def parse_cv_wrapper(raw: str) -> str:
@@ -188,6 +194,19 @@ def parse_letter_wrapper(raw: str) -> str:
     if end_idx == -1:
         raise ValueError(f"Missing {_LETTER_END} marker in OpenClaw response")
     return raw[start_idx + len(_LETTER_START):end_idx].strip()
+
+
+def parse_answers_wrapper(raw: str) -> list[dict]:
+    """Extract JSON answers list from [ANSWERS_START]...[ANSWERS_END] markers."""
+    start_idx = raw.find(_ANSWERS_START)
+    if start_idx == -1:
+        raise ValueError(f"Missing {_ANSWERS_START} marker in form-answerer response")
+    end_idx = raw.find(_ANSWERS_END, start_idx)
+    if end_idx == -1:
+        raise ValueError(f"Missing {_ANSWERS_END} marker in form-answerer response")
+    json_str = raw[start_idx + len(_ANSWERS_START):end_idx].strip()
+    data = json.loads(json_str)
+    return data.get("answers", [])
 
 
 # ── Filename generation ───────────────────────────────────────────────────────
@@ -227,6 +246,65 @@ def validate_forbidden_phrases(cv_text: str) -> list[str]:
     """Return list of forbidden phrases found in the CV (case-insensitive)."""
     text_lower = cv_text.lower()
     return [phrase for phrase in FORBIDDEN_PHRASES if phrase in text_lower]
+
+
+# ── Precalibrated answers (zero-token lookup from USER.md) ────────────────────
+
+_USER_MD_PATH: Final[Path] = WORKSPACE_DIR / "the-hunter" / "USER.md"
+_FILL_IN_RE: Final[re.Pattern[str]] = re.compile(r"\[FILL IN", re.IGNORECASE)
+
+# (pattern, USER.md section header) in priority order
+_PRECAL_PATTERNS: Final[list[tuple[re.Pattern[str], str]]] = [
+    (re.compile(r"salary|salaire|pr[eé]tention|compensation|r[eé]mun[eé]ration|wage", re.IGNORECASE), "Prétentions salariales"),
+    (re.compile(r"availab|disponib|start\s*date|notice\s*period|when\s+can\s+you\s+start", re.IGNORECASE), "Disponibilité"),
+    (re.compile(r"remote|t[eé]l[eé]travail|work\s+from\s+home|wfh", re.IGNORECASE), "Télétravail"),
+    (re.compile(r"python.*experience|experience.*python|years.*python|python.*years", re.IGNORECASE), "Expérience Python"),
+    (re.compile(r"years?\s+of\s+experience|how\s+many\s+years|ans\s+d.exp[eé]rience", re.IGNORECASE), "Années d'expérience"),
+    (re.compile(r"right\s+to\s+work|work\s+permit|autorisation\s+de\s+travail|visa.*work|work.*authoriz|eligible\s+to\s+work", re.IGNORECASE), "Droit de travail en Suisse"),
+]
+
+
+def _parse_user_md_precal(path: Path = _USER_MD_PATH) -> dict[str, str]:
+    """Load pre-calibrated answer sections from USER.md.
+
+    Returns {section_name: answer_text}. Sections with [FILL IN] are excluded.
+    """
+    try:
+        text = path.read_text(encoding="utf-8")
+    except FileNotFoundError:
+        logger.warning("USER.md not found at %s — pre-calibration disabled", path)
+        return {}
+
+    result: dict[str, str] = {}
+
+    precal_start = text.find("## Réponses pré-calibrées")
+    if precal_start == -1:
+        return result
+
+    next_h2 = re.search(r"\n## ", text[precal_start + 1:])
+    precal_block = (
+        text[precal_start: precal_start + 1 + next_h2.start()]
+        if next_h2
+        else text[precal_start:]
+    )
+
+    for m in re.finditer(r"### (.+?)\n(.*?)(?=\n### |\Z)", precal_block, re.DOTALL):
+        section_name = m.group(1).strip()
+        section_content = m.group(2).strip()
+        quoted = re.search(r'"(.+?)"', section_content, re.DOTALL)
+        answer = quoted.group(1).strip() if quoted else section_content
+        if answer and not _FILL_IN_RE.search(answer):
+            result[section_name] = answer
+
+    return result
+
+
+def _match_precalibrated(label: str, user_answers: dict[str, str]) -> str | None:
+    """Return pre-calibrated answer for label if matched, else None."""
+    for pattern, section_name in _PRECAL_PATTERNS:
+        if pattern.search(label) and section_name in user_answers:
+            return user_answers[section_name]
+    return None
 
 
 # ── OpenClaw call ─────────────────────────────────────────────────────────────
@@ -311,6 +389,36 @@ def call_cover_letter_writer(brief: dict) -> str:
     return _extract_inner(result.stdout.strip())
 
 
+def call_form_answerer(brief: dict) -> str:
+    """Dispatch form-answerer skill via openclaw agent CLI. Returns raw output text."""
+    session_id = f"bridge-fa-{int(time.time())}"
+    message = (
+        f"[{FORM_ANSWERER_SKILL_NAME.upper()} SKILL]\n"
+        "Brief reçu depuis n8n :\n"
+        + json.dumps(brief, ensure_ascii=False, indent=2)
+        + f"\n\nApplique la skill {FORM_ANSWERER_SKILL_NAME} selon SKILL.md."
+    )
+    env = os.environ.copy()
+    env["OPENCLAW_CONFIG_PATH"] = OPENCLAW_CONFIG
+    env.setdefault("HOME", "/home/thehunter")
+    result = subprocess.run(
+        [
+            "openclaw", "agent",
+            "--agent", AGENT_ID,
+            "--session-id", session_id,
+            "--message", message,
+            "--json",
+            "--timeout", str(OPENCLAW_TIMEOUT),
+        ],
+        capture_output=True,
+        text=True,
+        timeout=OPENCLAW_TIMEOUT + 30,
+        stdin=subprocess.DEVNULL,
+        env=env,
+    )
+    return _extract_inner(result.stdout.strip())
+
+
 # ── FastAPI app ───────────────────────────────────────────────────────────────
 
 app = FastAPI(title="Hunter Bridge", version="0.1.0")
@@ -352,6 +460,34 @@ class CoverLetterResponse(BaseModel):
     word_count: int | None = None
     error: str | None = None
     forbidden_phrases_found: list[str] | None = None
+
+
+class FormAnswerQuestion(BaseModel):
+    id: str
+    label: str
+    type: str | None = None
+    options: list[str] | None = None
+
+
+class FormAnswersRequest(BaseModel):
+    questions: list[FormAnswerQuestion]
+    offer_description: str = Field(..., min_length=1)
+    company: str | None = None
+    title: str | None = None
+    url: str | None = None
+    language: str | None = None
+
+
+class FormAnswerItem(BaseModel):
+    id: str
+    answer: str
+    source: str  # "precalibrated" | "generated"
+
+
+class FormAnswersResponse(BaseModel):
+    ok: bool
+    answers: list[FormAnswerItem] | None = None
+    error: str | None = None
 
 
 @app.get("/health")
@@ -476,6 +612,70 @@ def cover_letter(req: CoverLetterRequest) -> CoverLetterResponse:
         word_count=wc,
         forbidden_phrases_found=forbidden if forbidden else None,
     )
+
+
+@app.post("/form-answers", response_model=FormAnswersResponse)
+def form_answers(req: FormAnswersRequest) -> FormAnswersResponse:
+    """Generate form answers: pre-calibrated from USER.md + Haiku for open questions. Rate-limited to 20/hour."""
+    if not _fa_rate_limiter.check_and_record():
+        raise HTTPException(
+            status_code=429,
+            detail={"ok": False, "error": "rate_limit: max 20 form answer requests per hour"},
+        )
+
+    if not req.questions:
+        return FormAnswersResponse(ok=True, answers=[])
+
+    language = detect_language(req.offer_description, req.language)
+    user_answers = _parse_user_md_precal()
+
+    precalibrated: list[FormAnswerItem] = []
+    open_questions: list[dict] = []
+
+    for q in req.questions:
+        answer = _match_precalibrated(q.label, user_answers)
+        if answer is not None:
+            precalibrated.append(FormAnswerItem(id=q.id, answer=answer, source="precalibrated"))
+        else:
+            open_questions.append({
+                "id": q.id,
+                "label": q.label,
+                "type": q.type,
+                "options": q.options,
+            })
+
+    if not open_questions:
+        return FormAnswersResponse(ok=True, answers=precalibrated)
+
+    brief = {
+        "title": req.title,
+        "company": req.company,
+        "url": req.url,
+        "language": language,
+        "questions": open_questions,
+    }
+
+    try:
+        raw_output = call_form_answerer(brief)
+    except subprocess.TimeoutExpired:
+        return FormAnswersResponse(
+            ok=False, error="timeout: OpenClaw form-answerer exceeded 600s"
+        )
+    except Exception as exc:
+        return FormAnswersResponse(ok=False, error=str(exc))
+
+    try:
+        generated = parse_answers_wrapper(raw_output)
+    except (ValueError, json.JSONDecodeError) as exc:
+        return FormAnswersResponse(ok=False, error=str(exc))
+
+    all_answers: list[FormAnswerItem] = precalibrated + [
+        FormAnswerItem(id=a["id"], answer=a.get("answer", ""), source="generated")
+        for a in generated
+        if isinstance(a, dict) and "id" in a
+    ]
+
+    return FormAnswersResponse(ok=True, answers=all_answers)
 
 
 if __name__ == "__main__":
