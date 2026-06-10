@@ -29,7 +29,7 @@ HEADERS: Final[dict[str, list[str]]] = {
     "MATCHES": [
         "job_id", "date_scanned", "title", "company", "location", "remote",
         "url", "source", "match_rate", "skills_found", "status",
-        "cv_drive_link", "letter_drive_link", "applied_at",
+        "cv_drive_link", "letter_drive_link", "applied_at", "snooze_count",
     ],
     "SCANNED_HASHES": [
         "sha256", "date_scanned", "url", "title", "company", "source",
@@ -44,7 +44,7 @@ TEST_ROWS: Final[dict[str, list[str]]] = {
     "MATCHES": [
         SENTINEL_PREFIX, "2026-01-01", "Test Job", "Test Corp", "Remote", "yes",
         "https://example.com/job/1", "indeed", "75.0", "python,llm",
-        "new", "", "", "",
+        "new", "", "", "", "0",
     ],
     "SCANNED_HASHES": [
         SENTINEL_PREFIX, "2026-01-01", "https://example.com/job/1",

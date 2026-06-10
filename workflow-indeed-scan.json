@@ -111,6 +111,32 @@
           }
         }
       }
+    },
+    {
+      "id": "prioritize-matches",
+      "name": "Prioritize Matches",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        2640,
+        0
+      ],
+      "parameters": {
+        "method": "POST",
+        "url": "=http://127.0.0.1:{{ $env.HUNTER_BRIDGE_PORT ?? '18798' }}/prioritize",
+        "sendBody": true,
+        "contentType": "raw",
+        "rawContentType": "application/json",
+        "body": "={{ JSON.stringify({ new_matches: $json.new_offers }) }}",
+        "options": {
+          "timeout": 120000,
+          "response": {
+            "response": {
+              "responseFormat": "json"
+            }
+          }
+        }
+      }
     }
   ],
   "connections": {
@@ -163,6 +189,17 @@
         [
           {
             "node": "Dedup: Check + Log",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Dedup: Check + Log": {
+      "main": [
+        [
+          {
+            "node": "Prioritize Matches",
             "type": "main",
             "index": 0
           }
