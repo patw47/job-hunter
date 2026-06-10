@@ -34,7 +34,7 @@ The Hunter is an OpenClaw-based AI agent running on a self-hosted VPS (n8n + sys
 Read PENDING_MATCHES + SCANNED_HASHES (Excel Drive)
         |
         ▼
-Scan: 60 Indeed MCP + 40 LinkedIn Playwright
+Scan: 60 Indeed Playwright + 40 LinkedIn Playwright
         |
         ▼
 Layer 1 — Disqualifying filters (Python, zero tokens)
@@ -152,7 +152,7 @@ LinkedIn: **never auto-apply** (bot detection risk — account ban).
 
 |Platform|Method|Volume|Status|
 |---|---|---|---|
-|Indeed|MCP official|60/day|✅ V1|
+|Indeed|Playwright scraper|60/day|✅ V1|
 |LinkedIn|Playwright scraper|40/day|✅ V1|
 |Collective Work|API or scraping|TBD|🔲 V2|
 
@@ -165,7 +165,7 @@ LinkedIn: **never auto-apply** (bot detection risk — account ban).
 - [OpenClaw](https://openclaw.ai/) — Agent framework
 - [Claude API](https://anthropic.com/) — CV rewriting & cover letters (Haiku + Sonnet)
 - [n8n](https://n8n.io/) — Workflow orchestration (self-hosted VPS)
-- [Indeed MCP](https://mcp.indeed.com/) — Job search
+- Indeed — Job search via Playwright scraper (`indeed_scraper.py`; MCP déprécié)
 - [Google Drive MCP](https://drivemcp.googleapis.com/) — Document + tracker storage
 - [Telegram Bot API](https://core.telegram.org/bots) — Notifications & validation
 - [Playwright](https://playwright.dev/) — LinkedIn scraping + Easy Apply + form detection

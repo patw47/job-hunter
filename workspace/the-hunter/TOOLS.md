@@ -14,11 +14,13 @@ Fichier tracker : `job-hunter-tracker` (Google Drive).
 
 Script d'accès : `test_sheets.py` (smoke test) + modules internes du pipeline Layer 1/2.
 
-### Indeed MCP
+### Indeed (scraper Playwright)
 
-- Quota : 60 offres/jour.
+- Accès via `indeed_scraper.py` (chromium headless). L'Indeed MCP est déprécié
+  (OAuth one-click non extractible vers VPS, pas de mode API-key) — voir `indeed-spike.md`.
+- Quota : 60 offres/jour (cap global), seuil passe élargie : 10.
 - Requêtes root : voir `KEYWORDS.md`.
-- Filtre global : `remote=true`.
+- Filtre remote natif : `sc=0kf:attr(DSQF7);` ; pas de filtre hybride natif (dérivé en aval).
 
 ### LinkedIn Playwright
 

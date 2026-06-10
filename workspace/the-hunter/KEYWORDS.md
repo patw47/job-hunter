@@ -2,7 +2,7 @@
 
 ## Requêtes racines (12 roots)
 
-Appliquées sur Indeed MCP et LinkedIn avec filtre global `remote=true`.
+Appliquées sur Indeed (scraper Playwright) et LinkedIn avec filtre global `remote=true`.
 
 ```
 AI

@@ -1,12 +1,15 @@
 {
-  "name": "Job Hunter — Indeed MCP Scan",
+  "name": "Job Hunter — Indeed Scan (Playwright scraper)",
   "nodes": [
     {
       "id": "schedule-trigger",
       "name": "Schedule Trigger",
       "type": "n8n-nodes-base.scheduleTrigger",
       "typeVersion": 1.1,
-      "position": [0, 0],
+      "position": [
+        0,
+        0
+      ],
       "parameters": {
         "rule": {
           "interval": [
@@ -19,218 +22,30 @@
       }
     },
     {
-      "id": "init-scan-roots",
-      "name": "Init: Scan Roots",
-      "type": "n8n-nodes-base.code",
-      "typeVersion": 2,
-      "position": [220, 0],
+      "id": "run-indeed-scraper",
+      "name": "Indeed Scraper (Playwright)",
+      "type": "n8n-nodes-base.executeCommand",
+      "typeVersion": 1,
+      "position": [
+        240,
+        0
+      ],
       "parameters": {
-        "jsCode": "// Racines de scan (README§Scan Sources)\nconst SCAN_ROOTS = [\n  'AI', 'agent', 'agentic', 'GenAI', 'automation',\n  'LLM', 'RAG', 'ML', 'full stack', 'n8n', 'Python', 'developer'\n];\n\nconst HYBRID_THRESHOLD = 10;  // Déclencher passe hybrid si remote < seuil\nconst GLOBAL_CAP = 60;         // Cap global toutes passes confondues\n\n// Construire la liste des requêtes passe 1 (remote)\nreturn SCAN_ROOTS.map(root => ({\n  json: { root, pass: 'remote', hybridThreshold: HYBRID_THRESHOLD, globalCap: GLOBAL_CAP }\n}));"
+        "command": "/home/thehunter/venv/bin/python3 /opt/apps/job-hunter/indeed_scraper.py"
       }
     },
     {
-      "id": "mcp-remote-search",
-      "name": "Indeed MCP: Remote Search",
-      "type": "n8n-nodes-base.httpRequest",
-      "typeVersion": 4.2,
-      "position": [440, 0],
-      "parameters": {
-        "method": "POST",
-        "url": "={{ $env.INDEED_MCP_URL ?? 'https://mcp.indeed.com/mcp' }}",
-        "authentication": "predefinedCredentialType",
-        "nodeCredentialType": "httpHeaderAuth",
-        "sendHeaders": true,
-        "headerParameters": {
-          "parameters": [
-            {
-              "name": "Content-Type",
-              "value": "application/json"
-            },
-            {
-              "name": "Accept",
-              "value": "application/json"
-            }
-          ]
-        },
-        "sendBody": true,
-        "contentType": "raw",
-        "rawContentType": "application/json",
-        "body": "={\n  \"jsonrpc\": \"2.0\",\n  \"method\": \"tools/call\",\n  \"params\": {\n    \"name\": \"search_jobs\",\n    \"arguments\": {\n      \"query\": \"{{ $json.root }}\",\n      \"remoteJobsOnly\": true,\n      \"limit\": 30\n    }\n  },\n  \"id\": {{ $itemIndex + 1 }}\n}",
-        "options": {
-          "timeout": 30000,
-          "response": {
-            "response": {
-              "responseFormat": "json"
-            }
-          }
-        }
-      },
-      "credentials": {
-        "httpHeaderAuth": {
-          "id": "REPLACE_WITH_INDEED_MCP_CREDENTIAL_ID",
-          "name": "Indeed MCP API Key"
-        }
-      }
-    },
-    {
-      "id": "aggregate-remote",
-      "name": "Aggregate: Remote Results",
+      "id": "parse-scraper-output",
+      "name": "Parse Scraper Output",
       "type": "n8n-nodes-base.code",
       "typeVersion": 2,
-      "position": [660, 0],
+      "position": [
+        480,
+        0
+      ],
       "parameters": {
         "mode": "runOnceForAllItems",
-        "jsCode": "// Agréger les résultats remote de tous les roots\n// Dédupliquer par URL\n\nconst seenUrls = new Set();\nconst remoteOffers = [];\n\nfor (const item of $input.all()) {\n  const body = item.json;\n  // Extraire les offres depuis la réponse MCP\n  const content = body?.result?.content ?? [];\n  let offers = [];\n  if (content.length > 0) {\n    try {\n      offers = JSON.parse(content[0].text ?? '[]');\n    } catch (_) {\n      // Certains serveurs retournent directement dans result\n      offers = body?.result?.jobs ?? body?.result?.results ?? body?.result?.items ?? [];\n    }\n  } else {\n    // Fallback : chercher dans plusieurs clés\n    const raw = body?.result ?? body;\n    offers = raw?.jobs ?? raw?.results ?? raw?.items ?? raw?.offers ?? raw?.data ?? [];\n  }\n  if (!Array.isArray(offers)) offers = [];\n\n  for (const offer of offers) {\n    const url = offer.url ?? offer.link ?? offer.jobUrl ?? offer.applyUrl ?? offer.detailsPageUrl ?? '';\n    if (url && !seenUrls.has(url)) {\n      seenUrls.add(url);\n      remoteOffers.push({\n        url,\n        title:       offer.title ?? offer.jobTitle ?? offer.name ?? '',\n        company:     offer.company ?? offer.companyName ?? offer.employer ?? '',\n        location:    offer.location ?? offer.formattedLocation ?? offer.city ?? '',\n        description: (offer.description ?? offer.snippet ?? offer.summary ?? '').substring(0, 500),\n        job_type:    offer.jobType ?? offer.job_type ?? offer.employmentType ?? '',\n        date_posted: offer.datePosted ?? offer.date_posted ?? offer.postedAt ?? offer.formattedRelativeTime ?? '',\n        source:      'indeed',\n        _pass:       1\n      });\n    }\n  }\n}\n\nconst hybridThreshold = $input.first()?.json?.hybridThreshold ?? 10;\nconst globalCap       = $input.first()?.json?.globalCap ?? 60;\n\nreturn [{\n  json: {\n    remoteOffers: remoteOffers.slice(0, globalCap),\n    remoteCount:  remoteOffers.length,\n    needHybrid:   remoteOffers.length < hybridThreshold,\n    hybridThreshold,\n    globalCap\n  }\n}];"
-      }
-    },
-    {
-      "id": "check-hybrid-needed",
-      "name": "IF: Hybrid Needed",
-      "type": "n8n-nodes-base.if",
-      "typeVersion": 2,
-      "position": [880, 0],
-      "parameters": {
-        "conditions": {
-          "options": {
-            "caseSensitive": true,
-            "leftValue": "",
-            "typeValidation": "strict"
-          },
-          "conditions": [
-            {
-              "id": "hybrid-check",
-              "leftValue": "={{ $json.needHybrid }}",
-              "rightValue": true,
-              "operator": {
-                "type": "boolean",
-                "operation": "true"
-              }
-            }
-          ],
-          "combinator": "and"
-        },
-        "options": {}
-      }
-    },
-    {
-      "id": "build-hybrid-queries",
-      "name": "Build: Hybrid Queries",
-      "type": "n8n-nodes-base.code",
-      "typeVersion": 2,
-      "position": [1100, -100],
-      "parameters": {
-        "jsCode": "// Passe 2 : Hybrid — construire les requêtes pour les 12 racines\nconst SCAN_ROOTS = [\n  'AI', 'agent', 'agentic', 'GenAI', 'automation',\n  'LLM', 'RAG', 'ML', 'full stack', 'n8n', 'Python', 'developer'\n];\n\nconst state = $input.first().json;\n\nreturn SCAN_ROOTS.map(root => ({\n  json: {\n    root,\n    pass:         'hybrid',\n    remoteOffers: state.remoteOffers,\n    remoteCount:  state.remoteCount,\n    globalCap:    state.globalCap\n  }\n}));"
-      }
-    },
-    {
-      "id": "mcp-hybrid-search",
-      "name": "Indeed MCP: Hybrid Search",
-      "type": "n8n-nodes-base.httpRequest",
-      "typeVersion": 4.2,
-      "position": [1320, -100],
-      "parameters": {
-        "method": "POST",
-        "url": "={{ $env.INDEED_MCP_URL ?? 'https://mcp.indeed.com/mcp' }}",
-        "authentication": "predefinedCredentialType",
-        "nodeCredentialType": "httpHeaderAuth",
-        "sendHeaders": true,
-        "headerParameters": {
-          "parameters": [
-            {
-              "name": "Content-Type",
-              "value": "application/json"
-            },
-            {
-              "name": "Accept",
-              "value": "application/json"
-            }
-          ]
-        },
-        "sendBody": true,
-        "contentType": "raw",
-        "rawContentType": "application/json",
-        "body": "={\n  \"jsonrpc\": \"2.0\",\n  \"method\": \"tools/call\",\n  \"params\": {\n    \"name\": \"search_jobs\",\n    \"arguments\": {\n      \"query\": \"{{ $json.root }}\",\n      \"remoteJobsOnly\": false,\n      \"limit\": 30\n    }\n  },\n  \"id\": {{ $itemIndex + 100 }}\n}",
-        "options": {
-          "timeout": 30000,
-          "response": {
-            "response": {
-              "responseFormat": "json"
-            }
-          }
-        }
-      },
-      "credentials": {
-        "httpHeaderAuth": {
-          "id": "REPLACE_WITH_INDEED_MCP_CREDENTIAL_ID",
-          "name": "Indeed MCP API Key"
-        }
-      }
-    },
-    {
-      "id": "merge-hybrid-results",
-      "name": "Merge: Hybrid + Remote",
-      "type": "n8n-nodes-base.code",
-      "typeVersion": 2,
-      "position": [1540, -100],
-      "parameters": {
-        "mode": "runOnceForAllItems",
-        "jsCode": "// Fusionner les résultats hybrid avec les résultats remote\n// Dédupliquer par URL, appliquer cap global\n\nconst first = $input.first().json;\nconst remoteOffers = first.remoteOffers ?? [];\nconst globalCap    = first.globalCap ?? 60;\n\n// Reconstruire le set des URLs déjà vues (remote)\nconst seenUrls = new Set(remoteOffers.map(o => o.url).filter(Boolean));\nconst hybridOffers = [];\n\nfor (const item of $input.all()) {\n  const body = item.json;\n  const content = body?.result?.content ?? [];\n  let offers = [];\n  if (content.length > 0) {\n    try {\n      offers = JSON.parse(content[0].text ?? '[]');\n    } catch (_) {\n      offers = body?.result?.jobs ?? body?.result?.results ?? body?.result?.items ?? [];\n    }\n  } else {\n    const raw = body?.result ?? body;\n    offers = raw?.jobs ?? raw?.results ?? raw?.items ?? raw?.offers ?? raw?.data ?? [];\n  }\n  if (!Array.isArray(offers)) offers = [];\n\n  for (const offer of offers) {\n    if (seenUrls.size >= globalCap) break;\n    const url = offer.url ?? offer.link ?? offer.jobUrl ?? offer.applyUrl ?? '';\n    if (url && !seenUrls.has(url)) {\n      seenUrls.add(url);\n      hybridOffers.push({\n        url,\n        title:       offer.title ?? offer.jobTitle ?? offer.name ?? '',\n        company:     offer.company ?? offer.companyName ?? offer.employer ?? '',\n        location:    offer.location ?? offer.formattedLocation ?? offer.city ?? '',\n        description: (offer.description ?? offer.snippet ?? offer.summary ?? '').substring(0, 500),\n        job_type:    offer.jobType ?? offer.job_type ?? offer.employmentType ?? '',\n        date_posted: offer.datePosted ?? offer.date_posted ?? offer.postedAt ?? offer.formattedRelativeTime ?? '',\n        source:      'indeed',\n        _pass:       2\n      });\n    }\n  }\n}\n\nconst allOffers = [...remoteOffers, ...hybridOffers].slice(0, globalCap);\n\nreturn [{\n  json: {\n    offers:      allOffers,\n    totalCount:  allOffers.length,\n    remoteCount: remoteOffers.length,\n    hybridCount: hybridOffers.length,\n    scanDate:    new Date().toISOString()\n  }\n}];"
-      }
-    },
-    {
-      "id": "no-hybrid-passthrough",
-      "name": "No Hybrid: Passthrough",
-      "type": "n8n-nodes-base.set",
-      "typeVersion": 3.4,
-      "position": [1100, 100],
-      "parameters": {
-        "mode": "manual",
-        "duplicateItem": false,
-        "assignments": {
-          "assignments": [
-            {
-              "id": "offers",
-              "name": "offers",
-              "value": "={{ $json.remoteOffers }}",
-              "type": "array"
-            },
-            {
-              "id": "totalCount",
-              "name": "totalCount",
-              "value": "={{ $json.remoteCount }}",
-              "type": "number"
-            },
-            {
-              "id": "remoteCount",
-              "name": "remoteCount",
-              "value": "={{ $json.remoteCount }}",
-              "type": "number"
-            },
-            {
-              "id": "hybridCount",
-              "name": "hybridCount",
-              "value": 0,
-              "type": "number"
-            },
-            {
-              "id": "scanDate",
-              "name": "scanDate",
-              "value": "={{ new Date().toISOString() }}",
-              "type": "string"
-            }
-          ]
-        },
-        "options": {}
-      }
-    },
-    {
-      "id": "merge-branches",
-      "name": "Merge Branches",
-      "type": "n8n-nodes-base.merge",
-      "typeVersion": 3,
-      "position": [1760, 0],
-      "parameters": {
-        "mode": "append"
+        "jsCode": "// Le scraper Python possède déjà la logique deux-passes : cap global (60),\n// seuil hybride (10), déduplication par URL et normalisation 7 champs\n// (source:indeed). Ici on se contente de parser sa sortie stdout (JSON array)\n// et d'échouer proprement sur exit code != 0 (CAPTCHA / aucune offre).\n\nconst GLOBAL_CAP = 60;\nconst result = $input.first().json;\nconst exitCode = result.exitCode ?? result.returnCode ?? 0;\nconst stdout = (result.stdout ?? '').trim();\nconst stderr = (result.stderr ?? '').trim();\n\nif (exitCode !== 0) {\n  throw new Error(`indeed_scraper.py exit ${exitCode}: ${stderr.slice(-300)}`);\n}\n\nlet offers = [];\ntry {\n  offers = JSON.parse(stdout || '[]');\n} catch (err) {\n  throw new Error(`Sortie scraper non-JSON: ${stdout.slice(0, 200)}`);\n}\nif (!Array.isArray(offers)) offers = [];\n\n// Dédup défensive par URL + cap (le scraper le fait déjà, ceinture+bretelles).\nconst seen = new Set();\nconst deduped = [];\nfor (const o of offers) {\n  const url = o.url ?? '';\n  if (url && !seen.has(url)) {\n    seen.add(url);\n    deduped.push(o);\n  }\n}\nconst capped = deduped.slice(0, GLOBAL_CAP);\n\nreturn [{\n  json: {\n    offers:     capped,\n    totalCount: capped.length,\n    scanDate:   new Date().toISOString()\n  }\n}];"
       }
     },
     {
@@ -238,7 +53,10 @@
       "name": "Scan Output",
       "type": "n8n-nodes-base.set",
       "typeVersion": 3.4,
-      "position": [1980, 0],
+      "position": [
+        720,
+        0
+      ],
       "parameters": {
         "mode": "manual",
         "duplicateItem": false,
@@ -260,7 +78,10 @@
       "name": "Prepare: Dedup Request",
       "type": "n8n-nodes-base.code",
       "typeVersion": 2,
-      "position": [2200, 0],
+      "position": [
+        2200,
+        0
+      ],
       "parameters": {
         "jsCode": "// Format scan_date as dd.mm.yyyy and extract offers for dedup\nconst scanResult = $input.first().json.scan_result || $input.first().json;\nconst offers = scanResult.offers || [];\n\nlet scanDate;\ntry {\n  const d = new Date(scanResult.scanDate);\n  const dd = String(d.getDate()).padStart(2, '0');\n  const mm = String(d.getMonth() + 1).padStart(2, '0');\n  const yyyy = d.getFullYear();\n  scanDate = `${dd}.${mm}.${yyyy}`;\n} catch (_) {\n  const now = new Date();\n  scanDate = `${String(now.getDate()).padStart(2,'0')}.${String(now.getMonth()+1).padStart(2,'0')}.${now.getFullYear()}`;\n}\n\nreturn [{ json: { offers, scan_date: scanDate } }];"
       }
@@ -270,7 +91,10 @@
       "name": "Dedup: Check + Log",
       "type": "n8n-nodes-base.httpRequest",
       "typeVersion": 4.2,
-      "position": [2420, 0],
+      "position": [
+        2420,
+        0
+      ],
       "parameters": {
         "method": "POST",
         "url": "=http://127.0.0.1:{{ $env.HUNTER_BRIDGE_PORT ?? '18798' }}/dedup",
@@ -292,63 +116,57 @@
   "connections": {
     "Schedule Trigger": {
       "main": [
-        [{"node": "Init: Scan Roots", "type": "main", "index": 0}]
+        [
+          {
+            "node": "Indeed Scraper (Playwright)",
+            "type": "main",
+            "index": 0
+          }
+        ]
       ]
     },
-    "Init: Scan Roots": {
+    "Indeed Scraper (Playwright)": {
       "main": [
-        [{"node": "Indeed MCP: Remote Search", "type": "main", "index": 0}]
+        [
+          {
+            "node": "Parse Scraper Output",
+            "type": "main",
+            "index": 0
+          }
+        ]
       ]
     },
-    "Indeed MCP: Remote Search": {
+    "Parse Scraper Output": {
       "main": [
-        [{"node": "Aggregate: Remote Results", "type": "main", "index": 0}]
-      ]
-    },
-    "Aggregate: Remote Results": {
-      "main": [
-        [{"node": "IF: Hybrid Needed", "type": "main", "index": 0}]
-      ]
-    },
-    "IF: Hybrid Needed": {
-      "main": [
-        [{"node": "Build: Hybrid Queries", "type": "main", "index": 0}],
-        [{"node": "No Hybrid: Passthrough", "type": "main", "index": 0}]
-      ]
-    },
-    "Build: Hybrid Queries": {
-      "main": [
-        [{"node": "Indeed MCP: Hybrid Search", "type": "main", "index": 0}]
-      ]
-    },
-    "Indeed MCP: Hybrid Search": {
-      "main": [
-        [{"node": "Merge: Hybrid + Remote", "type": "main", "index": 0}]
-      ]
-    },
-    "Merge: Hybrid + Remote": {
-      "main": [
-        [{"node": "Merge Branches", "type": "main", "index": 0}]
-      ]
-    },
-    "No Hybrid: Passthrough": {
-      "main": [
-        [{"node": "Merge Branches", "type": "main", "index": 1}]
-      ]
-    },
-    "Merge Branches": {
-      "main": [
-        [{"node": "Scan Output", "type": "main", "index": 0}]
+        [
+          {
+            "node": "Scan Output",
+            "type": "main",
+            "index": 0
+          }
+        ]
       ]
     },
     "Scan Output": {
       "main": [
-        [{"node": "Prepare: Dedup Request", "type": "main", "index": 0}]
+        [
+          {
+            "node": "Prepare: Dedup Request",
+            "type": "main",
+            "index": 0
+          }
+        ]
       ]
     },
     "Prepare: Dedup Request": {
       "main": [
-        [{"node": "Dedup: Check + Log", "type": "main", "index": 0}]
+        [
+          {
+            "node": "Dedup: Check + Log",
+            "type": "main",
+            "index": 0
+          }
+        ]
       ]
     }
   },
@@ -363,12 +181,17 @@
     "templateCredsSetupCompleted": false,
     "instanceId": "job-hunter"
   },
-  "id": "job-hunter-indeed-mcp-scan-001",
+  "id": "job-hunter-indeed-scan-001",
   "active": false,
   "tags": [
-    {"name": "job-hunter"},
-    {"name": "epic-2-pipeline-scanning"},
-    {"name": "sprint-0"},
-    {"name": "sprint-1-dedup"}
+    {
+      "name": "job-hunter"
+    },
+    {
+      "name": "epic-2-pipeline-scanning"
+    },
+    {
+      "name": "sprint-0-revision"
+    }
   ]
 }
