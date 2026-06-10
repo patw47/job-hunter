@@ -1,0 +1,225 @@
+{
+  "id": "job-hunter-scan-main-001",
+  "name": "Job Hunter — Scan Principal (12h00)",
+  "nodes": [
+    {
+      "id": "schedule-trigger",
+      "name": "Schedule Trigger",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.1,
+      "position": [0, 0],
+      "parameters": {
+        "rule": {
+          "interval": [
+            {
+              "field": "cronExpression",
+              "expression": "0 12 * * *"
+            }
+          ]
+        }
+      }
+    },
+    {
+      "id": "scan-indeed",
+      "name": "Scan Indeed",
+      "type": "n8n-nodes-base.executeCommand",
+      "typeVersion": 1,
+      "position": [240, 0],
+      "parameters": {
+        "command": "/home/thehunter/venv/bin/python3 /opt/apps/job-hunter/indeed_scraper.py"
+      }
+    },
+    {
+      "id": "parse-indeed-output",
+      "name": "Parse Indeed Output",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [480, 0],
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "jsCode": "const result = $input.first().json;\nconst exitCode = result.exitCode ?? result.returnCode ?? 0;\nconst stdout = (result.stdout ?? '').trim();\nconst stderr = (result.stderr ?? '').trim();\n\nif (exitCode !== 0) {\n  throw new Error(`indeed_scraper.py exit ${exitCode}: ${stderr.slice(-300)}`);\n}\n\nlet offers = [];\ntry {\n  offers = JSON.parse(stdout || '[]');\n} catch (err) {\n  throw new Error(`Sortie indeed non-JSON: ${stdout.slice(0, 200)}`);\n}\nif (!Array.isArray(offers)) offers = [];\n\nconst seen = new Set();\nconst unique = [];\nfor (const o of offers) {\n  const url = o.url ?? '';\n  if (url && !seen.has(url)) { seen.add(url); unique.push(o); }\n}\n\nreturn [{ json: { offers: unique, source: 'indeed', count: unique.length } }];"
+      }
+    },
+    {
+      "id": "scan-linkedin",
+      "name": "Scan LinkedIn",
+      "type": "n8n-nodes-base.executeCommand",
+      "typeVersion": 1,
+      "position": [720, 0],
+      "parameters": {
+        "command": "LINKEDIN_EMAIL={{ $env.LINKEDIN_EMAIL }} LINKEDIN_PASSWORD={{ $env.LINKEDIN_PASSWORD }} LINKEDIN_SESSION_DIR={{ $env.LINKEDIN_SESSION_DIR ?? '/opt/apps/job-hunter/sessions' }} /home/thehunter/venv/bin/python3 /opt/apps/job-hunter/linkedin_scraper.py"
+      }
+    },
+    {
+      "id": "parse-linkedin-output",
+      "name": "Parse LinkedIn Output",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [960, 0],
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "jsCode": "const result = $input.first().json;\nconst exitCode = result.exitCode ?? result.returnCode ?? 0;\nconst stdout = (result.stdout ?? '').trim();\nconst stderr = (result.stderr ?? '').trim();\n\nif (exitCode !== 0) {\n  const isCaptcha = stderr.toLowerCase().includes('captcha');\n  throw new Error(\n    isCaptcha\n      ? 'LinkedIn CAPTCHA détecté — scan interrompu. Reconnectez la session manuellement.'\n      : `linkedin_scraper.py exit ${exitCode}: ${stderr.slice(-300)}`\n  );\n}\n\nlet offers = [];\ntry {\n  offers = JSON.parse(stdout || '[]');\n} catch (err) {\n  throw new Error(`Sortie linkedin non-JSON: ${stdout.slice(0, 200)}`);\n}\nif (!Array.isArray(offers)) offers = [];\n\nconst seen = new Set();\nconst unique = [];\nfor (const o of offers) {\n  const url = o.url ?? '';\n  if (url && !seen.has(url)) { seen.add(url); unique.push(o); }\n}\n\nreturn [{ json: { offers: unique, source: 'linkedin', count: unique.length } }];"
+      }
+    },
+    {
+      "id": "merge-offers",
+      "name": "Merge Offers",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [1200, 0],
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "jsCode": "const indeedData = $('Parse Indeed Output').first().json;\nconst linkedinData = $input.first().json;\n\nconst indeedOffers = indeedData.offers || [];\nconst linkedinOffers = linkedinData.offers || [];\n\nconst all = [...indeedOffers, ...linkedinOffers];\nconst seen = new Set();\nconst merged = [];\nfor (const o of all) {\n  const url = o.url ?? '';\n  if (url && !seen.has(url)) { seen.add(url); merged.push(o); }\n}\n\nconst now = new Date();\nconst dd = String(now.getDate()).padStart(2, '0');\nconst mm = String(now.getMonth() + 1).padStart(2, '0');\nconst yyyy = now.getFullYear();\nconst scanDate = `${dd}.${mm}.${yyyy}`;\n\nreturn [{\n  json: {\n    offers: merged,\n    scan_date: scanDate,\n    indeed_count: indeedOffers.length,\n    linkedin_count: linkedinOffers.length,\n    total: merged.length,\n  }\n}];"
+      }
+    },
+    {
+      "id": "dedup-scanned-hashes",
+      "name": "Dedup SCANNED_HASHES",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [1440, 0],
+      "parameters": {
+        "method": "POST",
+        "url": "=http://127.0.0.1:{{ $env.HUNTER_BRIDGE_PORT ?? '18798' }}/dedup",
+        "sendBody": true,
+        "contentType": "raw",
+        "rawContentType": "application/json",
+        "body": "={{ JSON.stringify({ offers: $json.offers, scan_date: $json.scan_date }) }}",
+        "options": {
+          "timeout": 60000,
+          "response": {
+            "response": {
+              "responseFormat": "json"
+            }
+          }
+        }
+      }
+    },
+    {
+      "id": "layer1-filter",
+      "name": "Layer 1 Filter",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [1680, 0],
+      "parameters": {
+        "method": "POST",
+        "url": "=http://127.0.0.1:{{ $env.HUNTER_BRIDGE_PORT ?? '18798' }}/layer1",
+        "sendBody": true,
+        "contentType": "raw",
+        "rawContentType": "application/json",
+        "body": "={{ JSON.stringify({ offers: $json.new_offers, scan_date: $json.scan_date }) }}",
+        "options": {
+          "timeout": 30000,
+          "response": {
+            "response": {
+              "responseFormat": "json"
+            }
+          }
+        }
+      }
+    },
+    {
+      "id": "layer2-score",
+      "name": "Layer 2 Score",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [1920, 0],
+      "parameters": {
+        "method": "POST",
+        "url": "=http://127.0.0.1:{{ $env.HUNTER_BRIDGE_PORT ?? '18798' }}/layer2",
+        "sendBody": true,
+        "contentType": "raw",
+        "rawContentType": "application/json",
+        "body": "={{ JSON.stringify({ offers: $json.passed, scan_date: $json.scan_date }) }}",
+        "options": {
+          "timeout": 30000,
+          "response": {
+            "response": {
+              "responseFormat": "json"
+            }
+          }
+        }
+      }
+    },
+    {
+      "id": "write-scan-results",
+      "name": "Write Scan Results",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [2160, 0],
+      "parameters": {
+        "method": "POST",
+        "url": "=http://127.0.0.1:{{ $env.HUNTER_BRIDGE_PORT ?? '18798' }}/sheets/write-scan-results",
+        "sendBody": true,
+        "contentType": "raw",
+        "rawContentType": "application/json",
+        "body": "={{ JSON.stringify({ offers: $json.high_match, scan_date: $json.scan_date }) }}",
+        "options": {
+          "timeout": 60000,
+          "response": {
+            "response": {
+              "responseFormat": "json"
+            }
+          }
+        }
+      }
+    },
+    {
+      "id": "scan-complete",
+      "name": "Scan Complete",
+      "type": "n8n-nodes-base.noOp",
+      "typeVersion": 1,
+      "position": [2400, 0],
+      "parameters": {}
+    }
+  ],
+  "connections": {
+    "Schedule Trigger": {
+      "main": [[{ "node": "Scan Indeed", "type": "main", "index": 0 }]]
+    },
+    "Scan Indeed": {
+      "main": [[{ "node": "Parse Indeed Output", "type": "main", "index": 0 }]]
+    },
+    "Parse Indeed Output": {
+      "main": [[{ "node": "Scan LinkedIn", "type": "main", "index": 0 }]]
+    },
+    "Scan LinkedIn": {
+      "main": [[{ "node": "Parse LinkedIn Output", "type": "main", "index": 0 }]]
+    },
+    "Parse LinkedIn Output": {
+      "main": [[{ "node": "Merge Offers", "type": "main", "index": 0 }]]
+    },
+    "Merge Offers": {
+      "main": [[{ "node": "Dedup SCANNED_HASHES", "type": "main", "index": 0 }]]
+    },
+    "Dedup SCANNED_HASHES": {
+      "main": [[{ "node": "Layer 1 Filter", "type": "main", "index": 0 }]]
+    },
+    "Layer 1 Filter": {
+      "main": [[{ "node": "Layer 2 Score", "type": "main", "index": 0 }]]
+    },
+    "Layer 2 Score": {
+      "main": [[{ "node": "Write Scan Results", "type": "main", "index": 0 }]]
+    },
+    "Write Scan Results": {
+      "main": [[{ "node": "Scan Complete", "type": "main", "index": 0 }]]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1",
+    "saveDataSuccessExecution": "all",
+    "saveExecutionProgress": true,
+    "callerPolicy": "workflowsFromSameOwner"
+  },
+  "staticData": null,
+  "meta": {
+    "templateCredsSetupCompleted": false,
+    "instanceId": "job-hunter"
+  },
+  "active": false,
+  "tags": [
+    { "name": "job-hunter" },
+    { "name": "epic-7-n8n-orchestration" },
+    { "name": "sprint-0" }
+  ]
+}
