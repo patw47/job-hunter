@@ -12,3 +12,6 @@ n8n-data/
 
 # Generated at deploy time — contains Telegram bot token
 workspace/openclaw.json
+
+# Agent sprint handoff summaries — mirrored to Obsidian vault, never committed
+.sprint-*-summary.md
