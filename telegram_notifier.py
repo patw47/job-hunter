@@ -202,6 +202,69 @@ def send_match_card(offer: dict, bot_token: str, chat_id: str) -> None:
         raise RuntimeError(f"Telegram API error: {description}")
 
 
+def answer_callback_query(token: str, callback_query_id: str, text: str = "") -> dict:
+    """Respond to a Telegram callback_query to dismiss the loading spinner."""
+    result = _telegram_post(
+        token,
+        "answerCallbackQuery",
+        {"callback_query_id": callback_query_id, "text": text},
+    )
+    if not result.get("ok"):
+        description = result.get("description", str(result))
+        logger.error("answerCallbackQuery failed: %s", description)
+        raise RuntimeError(f"Telegram API error: {description}")
+    return result
+
+
+def edit_message_text(
+    token: str,
+    chat_id: str,
+    message_id: int,
+    text: str,
+    reply_markup: dict | None = None,
+) -> dict:
+    """Edit an existing message text (and optionally its reply markup)."""
+    payload: dict = {
+        "chat_id": chat_id,
+        "message_id": message_id,
+        "text": text,
+        "parse_mode": "HTML",
+        "disable_web_page_preview": True,
+    }
+    if reply_markup is not None:
+        payload["reply_markup"] = reply_markup
+    result = _telegram_post(token, "editMessageText", payload)
+    if not result.get("ok"):
+        description = result.get("description", str(result))
+        logger.error("editMessageText failed: %s", description)
+        raise RuntimeError(f"Telegram API error: {description}")
+    return result
+
+
+def send_snooze_renotifications(
+    bot_token: str, chat_id: str, creds_path: str | None = None
+) -> int:
+    """Re-send snoozed offers as individual cards (called at 12h30 alongside digest).
+
+    Returns number of cards sent.
+    """
+    from matches_sheet import get_snoozed_offers, open_matches_sheet
+
+    sheet = open_matches_sheet(creds_path)
+    snoozed = get_snoozed_offers(sheet)
+    sent = 0
+    for offer in snoozed:
+        try:
+            send_match_card(offer, bot_token, chat_id)
+            sent += 1
+        except Exception as exc:
+            logger.warning(
+                "Snooze re-notification failed for %r: %s", offer.get("title"), exc
+            )
+    logger.info("Snooze re-notifications: %d sent", sent)
+    return sent
+
+
 if __name__ == "__main__":
     import argparse
     import sys
