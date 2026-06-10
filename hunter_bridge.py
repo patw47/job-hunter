@@ -3,10 +3,11 @@
 Hunter Bridge — FastAPI server for CV generation and cover letters.
 
 Routes:
-  GET  /health         -- healthcheck
-  POST /rewrite-cv     -- cv-rewriter skill (Sonnet), rate-limited to 5/hour
-  POST /cover-letter   -- cover-letter-writer skill (Sonnet), rate-limited to 5/hour
-  POST /form-answers   -- form-answerer skill (Haiku), pre-calibrated lookup + LLM fallback, rate-limited to 20/hour
+  GET  /health             -- healthcheck
+  POST /rewrite-cv         -- cv-rewriter skill (Sonnet), rate-limited to 5/hour
+  POST /cover-letter       -- cover-letter-writer skill (Sonnet), rate-limited to 5/hour
+  POST /form-answers       -- form-answerer skill (Haiku), pre-calibrated lookup + LLM fallback, rate-limited to 20/hour
+  POST /store-documents    -- Drive upload + MATCHES update + Telegram notification payload, rate-limited to 10/hour
 """
 from __future__ import annotations
 
@@ -23,6 +24,8 @@ from typing import Final
 
 from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel, Field
+
+import drive_uploader
 
 logger = logging.getLogger(__name__)
 
@@ -163,6 +166,8 @@ _cv_rate_limiter = _RateLimiter(RATE_LIMIT_MAX, RATE_LIMIT_WINDOW)
 _cl_rate_limiter = _RateLimiter(RATE_LIMIT_MAX, RATE_LIMIT_WINDOW)
 _FA_RATE_LIMIT_MAX: Final[int] = 20
 _fa_rate_limiter = _RateLimiter(_FA_RATE_LIMIT_MAX, RATE_LIMIT_WINDOW)
+_SD_RATE_LIMIT_MAX: Final[int] = 10
+_sd_rate_limiter = _RateLimiter(_SD_RATE_LIMIT_MAX, RATE_LIMIT_WINDOW)
 
 # ── CV parsing ────────────────────────────────────────────────────────────────
 
@@ -676,6 +681,85 @@ def form_answers(req: FormAnswersRequest) -> FormAnswersResponse:
     ]
 
     return FormAnswersResponse(ok=True, answers=all_answers)
+
+
+class StoreDocumentsRequest(BaseModel):
+    job_id: str = Field(..., min_length=1)
+    company: str = Field(..., min_length=1)
+    position: str = Field(..., min_length=1)
+    offer_url: str = Field(..., min_length=1)
+    detection_date: str = Field(..., min_length=1)
+    match_rate: float | None = None
+    language: str | None = None
+    cv_markdown: str = Field(..., min_length=1)
+    lm_markdown: str = Field(..., min_length=1)
+    application_type: str = Field(..., min_length=1)
+    form_questions_count: int = 0
+
+
+class StoreDocumentsResponse(BaseModel):
+    ok: bool
+    cv_drive_url: str | None = None
+    lm_drive_url: str | None = None
+    telegram_message: dict | None = None
+    error: str | None = None
+
+
+@app.post("/store-documents", response_model=StoreDocumentsResponse)
+def store_documents(req: StoreDocumentsRequest) -> StoreDocumentsResponse:
+    """Upload CV+letter to Drive, update MATCHES, return Telegram notification payload. Rate-limited to 10/hour."""
+    if not _sd_rate_limiter.check_and_record():
+        raise HTTPException(
+            status_code=429,
+            detail={"ok": False, "error": "rate_limit: max 10 store-documents requests per hour"},
+        )
+
+    year_month = req.detection_date[:7]
+
+    metadata = {
+        "Company": req.company,
+        "Position": req.position,
+        "Offer URL": req.offer_url,
+        "Detection date": req.detection_date,
+        "Match Rate": req.match_rate if req.match_rate is not None else "",
+        "Language": req.language or "",
+        "Status": drive_uploader.STATUS_GENERATED,
+    }
+
+    cv_with_header = drive_uploader.prepend_yaml_header(req.cv_markdown, metadata)
+    lm_with_header = drive_uploader.prepend_yaml_header(req.lm_markdown, metadata)
+
+    cv_filename = generate_cv_filename(req.company, req.detection_date)
+    lm_filename = generate_letter_filename(req.company, req.detection_date)
+
+    uploader = drive_uploader.DriveUploader()
+
+    try:
+        cv_url = uploader.upload_document(cv_with_header, cv_filename, year_month)
+        lm_url = uploader.upload_document(lm_with_header, lm_filename, year_month)
+    except Exception as exc:
+        logger.error("Drive upload failed: %s", exc)
+        return StoreDocumentsResponse(ok=False, error=str(exc))
+
+    uploader.update_matches(req.job_id, cv_url, lm_url)
+
+    notification = drive_uploader.build_telegram_notification(
+        company=req.company,
+        position=req.position,
+        cv_url=cv_url,
+        lm_url=lm_url,
+        offer_url=req.offer_url,
+        job_id=req.job_id,
+        application_type=req.application_type,
+        form_questions_count=req.form_questions_count,
+    )
+
+    return StoreDocumentsResponse(
+        ok=True,
+        cv_drive_url=cv_url,
+        lm_drive_url=lm_url,
+        telegram_message=notification,
+    )
 
 
 if __name__ == "__main__":
