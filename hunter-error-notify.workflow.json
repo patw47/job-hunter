@@ -1,0 +1,73 @@
+{
+  "id": "job-hunter-error-notify-001",
+  "name": "Job Hunter — Error Notify",
+  "nodes": [
+    {
+      "id": "error-trigger",
+      "name": "Error Trigger",
+      "type": "n8n-nodes-base.errorTrigger",
+      "typeVersion": 1,
+      "position": [0, 0],
+      "parameters": {}
+    },
+    {
+      "id": "format-error-message",
+      "name": "Format Error Message",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [240, 0],
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "jsCode": "const data = $input.first().json;\nconst workflowName = data.workflow && data.workflow.name ? data.workflow.name : 'Unknown workflow';\nconst nodeName = data.error && data.error.node && data.error.node.name ? data.error.node.name : 'Unknown node';\nconst errorMsg = (data.error && data.error.message) ? data.error.message : 'Unknown error';\nconst chatId = $env.TELEGRAM_HUNTER_CHAT_ID;\n\nconst isCaptcha = errorMsg.toLowerCase().includes('captcha');\nconst isTimeout = errorMsg.toLowerCase().includes('timeout') || errorMsg.toLowerCase().includes('timed out');\nconst isBridgeDown = errorMsg.toLowerCase().includes('econnrefused') || errorMsg.toLowerCase().includes('hunter bridge') || errorMsg.toLowerCase().includes('18798');\n\nlet text;\nif (isCaptcha) {\n  text = '🔒 *CAPTCHA LinkedIn détecté !*\\n\\nLe scraper s\\'est arrêté. Reconnectez la session LinkedIn manuellement puis relancez le scan.';\n} else if (isBridgeDown) {\n  text = '🔴 *Hunter Bridge inaccessible !*\\n\\n*Workflow :* ' + workflowName + '\\n*Erreur :* ' + errorMsg.slice(0, 200);\n} else if (isTimeout) {\n  text = '⏱ *Timeout pipeline Job Hunter*\\n\\n*Workflow :* ' + workflowName + '\\n*Nœud :* ' + nodeName + '\\n*Erreur :* ' + errorMsg.slice(0, 200);\n} else {\n  text = '🚨 *Erreur pipeline Job Hunter*\\n\\n*Workflow :* ' + workflowName + '\\n*Nœud :* ' + nodeName + '\\n*Erreur :* ' + errorMsg.slice(0, 300);\n}\n\nreturn [{ json: { text, chat_id: chatId } }];"
+      }
+    },
+    {
+      "id": "send-error-telegram",
+      "name": "Send Error Telegram",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [480, 0],
+      "parameters": {
+        "method": "POST",
+        "url": "=https://api.telegram.org/bot{{ $env.TELEGRAM_HUNTER_BOT_TOKEN }}/sendMessage",
+        "sendBody": true,
+        "contentType": "raw",
+        "rawContentType": "application/json",
+        "body": "={{ JSON.stringify({ chat_id: $json.chat_id, text: $json.text, parse_mode: 'Markdown' }) }}",
+        "options": {
+          "timeout": 10000,
+          "response": {
+            "response": {
+              "responseFormat": "json"
+            }
+          }
+        }
+      }
+    }
+  ],
+  "connections": {
+    "Error Trigger": {
+      "main": [[{ "node": "Format Error Message", "type": "main", "index": 0 }]]
+    },
+    "Format Error Message": {
+      "main": [[{ "node": "Send Error Telegram", "type": "main", "index": 0 }]]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1",
+    "saveDataSuccessExecution": "all",
+    "saveExecutionProgress": true,
+    "callerPolicy": "workflowsFromSameOwner"
+  },
+  "staticData": null,
+  "meta": {
+    "templateCredsSetupCompleted": false,
+    "instanceId": "job-hunter"
+  },
+  "active": true,
+  "tags": [
+    { "name": "job-hunter" },
+    { "name": "epic-7-n8n-orchestration" },
+    { "name": "sprint-2" }
+  ]
+}

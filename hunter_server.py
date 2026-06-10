@@ -47,13 +47,18 @@ def call_hunter(message, tag, timeout=600):
     env = os.environ.copy()
     env["OPENCLAW_CONFIG_PATH"] = OPENCLAW_CONFIG
     env.setdefault("HOME", "/home/thehunter")
-    r = subprocess.run(
-        ["openclaw", "agent", "--agent", AGENT_ID,
-         "--session-id", session_id, "--message", message,
-         "--json", "--timeout", str(timeout)],
-        capture_output=True, text=True, timeout=timeout + 20, env=env,
-    )
-    return r.stdout.strip()
+    cmd = ["openclaw", "agent", "--agent", AGENT_ID,
+           "--session-id", session_id, "--message", message,
+           "--json", "--timeout", str(timeout)]
+    for attempt in range(2):
+        try:
+            r = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout + 20, env=env)
+            return r.stdout.strip()
+        except subprocess.TimeoutExpired:
+            if attempt == 0:
+                logger.warning("call_hunter timeout (attempt 1), retrying once...")
+                continue
+            raise
 
 
 def extract_inner(stdout):
@@ -208,6 +213,23 @@ def _handle_layer2(body: dict) -> dict:
     }
 
 
+def _sheets_append_with_retry(sheet, rows: list[list], max_retries: int = 3) -> None:
+    """Append rows to a worksheet, retrying on 429 rate-limit errors with exponential backoff."""
+    import gspread
+
+    for attempt in range(max_retries + 1):
+        try:
+            sheet.append_rows(rows, value_input_option="RAW")
+            return
+        except gspread.exceptions.APIError as exc:
+            status = getattr(getattr(exc, "response", None), "status_code", 0)
+            if status != 429 or attempt >= max_retries:
+                raise
+            delay = 2 ** (attempt + 1)
+            logger.warning("Sheets 429 rate limit, retry %d/%d in %ds", attempt + 1, max_retries, delay)
+            time.sleep(delay)
+
+
 def _handle_write_scan_results(body: dict) -> dict:
     """Write high-match offers (from /layer2 high_match) to MATCHES and PENDING_MATCHES sheets."""
     import gspread
@@ -245,8 +267,8 @@ def _handle_write_scan_results(body: dict) -> dict:
             offer.get("url", ""), match_pct, skills_str, offer.get("source", ""), rank,
         ])
 
-    matches_sheet.append_rows(matches_rows, value_input_option="RAW")
-    pending_sheet.append_rows(pending_rows, value_input_option="RAW")
+    _sheets_append_with_retry(matches_sheet, matches_rows)
+    _sheets_append_with_retry(pending_sheet, pending_rows)
 
     return {"ok": True, "written_count": len(offers), "scan_date": scan_date}
 
@@ -411,7 +433,26 @@ class Handler(BaseHTTPRequestHandler):
 
     def do_GET(self):
         if self.path == "/health":
-            self._send(200, {"status": "ok", "service": "hunter-bridge", "agent": AGENT_ID, "port": PORT})
+            try:
+                import health_check as hc
+                service_checks = [
+                    hc.check_n8n(),
+                    hc.check_openclaw(),
+                    hc.check_google_sheets(),
+                ]
+            except Exception as exc:
+                logger.warning("health_check import failed: %s", exc)
+                service_checks = []
+            services = service_checks + [{"service": "hunter_bridge", "ok": True}]
+            all_ok = all(s["ok"] for s in services)
+            self._send(200, {
+                "status": "ok",
+                "service": "hunter-bridge",
+                "agent": AGENT_ID,
+                "port": PORT,
+                "ok": all_ok,
+                "services": services,
+            })
         elif self.path == "/sheets/pending-matches":
             try:
                 self._send(200, _handle_read_pending_matches())
@@ -467,5 +508,20 @@ class Handler(BaseHTTPRequestHandler):
 
 
 if __name__ == "__main__":
+    import logging.handlers as _lh
+
+    _log_dir = "/opt/apps/job-hunter/logs"
+    os.makedirs(_log_dir, exist_ok=True)
+    _log_file = f"{_log_dir}/hunter.log"
+    _file_handler = _lh.TimedRotatingFileHandler(
+        _log_file, when="midnight", backupCount=7, encoding="utf-8"
+    )
+    _fmt = logging.Formatter("%(asctime)s %(levelname)s %(name)s: %(message)s")
+    _file_handler.setFormatter(_fmt)
+    logging.basicConfig(
+        level=logging.INFO,
+        format="%(asctime)s %(levelname)s %(name)s: %(message)s",
+        handlers=[logging.StreamHandler(), _file_handler],
+    )
     print(f"Hunter HTTP server listening on 127.0.0.1:{PORT}")
     HTTPServer(("127.0.0.1", PORT), Handler).serve_forever()

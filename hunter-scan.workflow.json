@@ -209,7 +209,8 @@
     "executionOrder": "v1",
     "saveDataSuccessExecution": "all",
     "saveExecutionProgress": true,
-    "callerPolicy": "workflowsFromSameOwner"
+    "callerPolicy": "workflowsFromSameOwner",
+    "errorWorkflow": "job-hunter-error-notify-001"
   },
   "staticData": null,
   "meta": {
@@ -220,6 +221,7 @@
   "tags": [
     { "name": "job-hunter" },
     { "name": "epic-7-n8n-orchestration" },
-    { "name": "sprint-0" }
+    { "name": "sprint-0" },
+    { "name": "sprint-2" }
   ]
 }
