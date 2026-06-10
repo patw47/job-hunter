@@ -74,6 +74,16 @@ def _today_ddmmyyyy() -> str:
     return datetime.now().strftime("%d.%m.%Y")
 
 
+def _handle_prioritize(body: dict) -> dict:
+    """Run prioritizer: merge PENDING_MATCHES + new_matches, notify top 25, park overflow."""
+    from prioritizer import open_sheets, run_prioritizer
+
+    new_matches: list[dict] = body.get("new_matches", [])
+    pending_sheet, matches_sheet = open_sheets()
+    result = run_prioritizer(pending_sheet, matches_sheet, new_matches)
+    return {"ok": True, **result}
+
+
 def _handle_dedup(body: dict) -> dict:
     """Deduplicate offers against SCANNED_HASHES and write all new hashes in batch."""
     from deduplication import compute_hash, log_hashes, open_scanned_hashes
