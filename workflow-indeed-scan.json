@@ -6,7 +6,10 @@
       "name": "Schedule Trigger",
       "type": "n8n-nodes-base.scheduleTrigger",
       "typeVersion": 1.1,
-      "position": [0, 0],
+      "position": [
+        0,
+        0
+      ],
       "parameters": {
         "rule": {
           "interval": [
@@ -23,7 +26,10 @@
       "name": "Indeed Scraper (Playwright)",
       "type": "n8n-nodes-base.executeCommand",
       "typeVersion": 1,
-      "position": [240, 0],
+      "position": [
+        240,
+        0
+      ],
       "parameters": {
         "command": "/home/thehunter/venv/bin/python3 /opt/apps/job-hunter/indeed_scraper.py"
       }
@@ -33,7 +39,10 @@
       "name": "Parse Scraper Output",
       "type": "n8n-nodes-base.code",
       "typeVersion": 2,
-      "position": [480, 0],
+      "position": [
+        480,
+        0
+      ],
       "parameters": {
         "mode": "runOnceForAllItems",
         "jsCode": "// Le scraper Python possède déjà la logique deux-passes : cap global (60),\n// seuil hybride (10), déduplication par URL et normalisation 7 champs\n// (source:indeed). Ici on se contente de parser sa sortie stdout (JSON array)\n// et d'échouer proprement sur exit code != 0 (CAPTCHA / aucune offre).\n\nconst GLOBAL_CAP = 60;\nconst result = $input.first().json;\nconst exitCode = result.exitCode ?? result.returnCode ?? 0;\nconst stdout = (result.stdout ?? '').trim();\nconst stderr = (result.stderr ?? '').trim();\n\nif (exitCode !== 0) {\n  throw new Error(`indeed_scraper.py exit ${exitCode}: ${stderr.slice(-300)}`);\n}\n\nlet offers = [];\ntry {\n  offers = JSON.parse(stdout || '[]');\n} catch (err) {\n  throw new Error(`Sortie scraper non-JSON: ${stdout.slice(0, 200)}`);\n}\nif (!Array.isArray(offers)) offers = [];\n\n// Dédup défensive par URL + cap (le scraper le fait déjà, ceinture+bretelles).\nconst seen = new Set();\nconst deduped = [];\nfor (const o of offers) {\n  const url = o.url ?? '';\n  if (url && !seen.has(url)) {\n    seen.add(url);\n    deduped.push(o);\n  }\n}\nconst capped = deduped.slice(0, GLOBAL_CAP);\n\nreturn [{\n  json: {\n    offers:     capped,\n    totalCount: capped.length,\n    scanDate:   new Date().toISOString()\n  }\n}];"
@@ -44,7 +53,10 @@
       "name": "Scan Output",
       "type": "n8n-nodes-base.set",
       "typeVersion": 3.4,
-      "position": [720, 0],
+      "position": [
+        720,
+        0
+      ],
       "parameters": {
         "mode": "manual",
         "duplicateItem": false,
@@ -60,22 +72,101 @@
         },
         "options": {}
       }
+    },
+    {
+      "id": "prepare-dedup",
+      "name": "Prepare: Dedup Request",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        2200,
+        0
+      ],
+      "parameters": {
+        "jsCode": "// Format scan_date as dd.mm.yyyy and extract offers for dedup\nconst scanResult = $input.first().json.scan_result || $input.first().json;\nconst offers = scanResult.offers || [];\n\nlet scanDate;\ntry {\n  const d = new Date(scanResult.scanDate);\n  const dd = String(d.getDate()).padStart(2, '0');\n  const mm = String(d.getMonth() + 1).padStart(2, '0');\n  const yyyy = d.getFullYear();\n  scanDate = `${dd}.${mm}.${yyyy}`;\n} catch (_) {\n  const now = new Date();\n  scanDate = `${String(now.getDate()).padStart(2,'0')}.${String(now.getMonth()+1).padStart(2,'0')}.${now.getFullYear()}`;\n}\n\nreturn [{ json: { offers, scan_date: scanDate } }];"
+      }
+    },
+    {
+      "id": "dedup-check",
+      "name": "Dedup: Check + Log",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        2420,
+        0
+      ],
+      "parameters": {
+        "method": "POST",
+        "url": "=http://127.0.0.1:{{ $env.HUNTER_BRIDGE_PORT ?? '18798' }}/dedup",
+        "sendBody": true,
+        "contentType": "raw",
+        "rawContentType": "application/json",
+        "body": "={{ JSON.stringify($json) }}",
+        "options": {
+          "timeout": 60000,
+          "response": {
+            "response": {
+              "responseFormat": "json"
+            }
+          }
+        }
+      }
     }
   ],
   "connections": {
     "Schedule Trigger": {
       "main": [
-        [{"node": "Indeed Scraper (Playwright)", "type": "main", "index": 0}]
+        [
+          {
+            "node": "Indeed Scraper (Playwright)",
+            "type": "main",
+            "index": 0
+          }
+        ]
       ]
     },
     "Indeed Scraper (Playwright)": {
       "main": [
-        [{"node": "Parse Scraper Output", "type": "main", "index": 0}]
+        [
+          {
+            "node": "Parse Scraper Output",
+            "type": "main",
+            "index": 0
+          }
+        ]
       ]
     },
     "Parse Scraper Output": {
       "main": [
-        [{"node": "Scan Output", "type": "main", "index": 0}]
+        [
+          {
+            "node": "Scan Output",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Scan Output": {
+      "main": [
+        [
+          {
+            "node": "Prepare: Dedup Request",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Prepare: Dedup Request": {
+      "main": [
+        [
+          {
+            "node": "Dedup: Check + Log",
+            "type": "main",
+            "index": 0
+          }
+        ]
       ]
     }
   },
@@ -93,8 +184,14 @@
   "id": "job-hunter-indeed-scan-001",
   "active": false,
   "tags": [
-    {"name": "job-hunter"},
-    {"name": "epic-2-pipeline-scanning"},
-    {"name": "sprint-0-revision"}
+    {
+      "name": "job-hunter"
+    },
+    {
+      "name": "epic-2-pipeline-scanning"
+    },
+    {
+      "name": "sprint-0-revision"
+    }
   ]
 }
