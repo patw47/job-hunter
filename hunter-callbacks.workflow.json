@@ -1,0 +1,312 @@
+{
+  "id": "job-hunter-callbacks-001",
+  "name": "Job Hunter — Callbacks Telegram",
+  "nodes": [
+    {
+      "id": "webhook-trigger",
+      "name": "Webhook Trigger",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 1.1,
+      "position": [0, 0],
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "hunter-callbacks",
+        "responseMode": "responseNode",
+        "options": {}
+      }
+    },
+    {
+      "id": "parse-callback",
+      "name": "Parse Callback",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [240, 0],
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "jsCode": "const body = $input.first().json;\nconst cbq = body.callback_query;\n\nif (!cbq) {\n  return [];\n}\n\nconst data = cbq.data || '';\nconst parts = data.split(':');\nif (parts.length < 3 || parts[0] !== 'hunter') {\n  return [];\n}\n\nconst action = parts[1];\nconst job_id = parts.slice(2).join(':');\n\nif (!action || !job_id) {\n  return [];\n}\n\nconst chat_id = cbq.message && cbq.message.chat ? cbq.message.chat.id : null;\nconst message_id = cbq.message ? cbq.message.message_id : null;\nconst callback_query_id = cbq.id;\n\nreturn [{\n  json: {\n    action,\n    job_id,\n    chat_id,\n    message_id,\n    callback_query_id\n  }\n}];"
+      }
+    },
+    {
+      "id": "respond-to-webhook",
+      "name": "Respond to Webhook",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1,
+      "position": [480, 0],
+      "parameters": {
+        "respondWith": "noData",
+        "options": {}
+      }
+    },
+    {
+      "id": "answer-callback-query",
+      "name": "Answer Callback Query",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [720, 0],
+      "parameters": {
+        "method": "POST",
+        "url": "=https://api.telegram.org/bot{{ $env.TELEGRAM_HUNTER_BOT_TOKEN }}/answerCallbackQuery",
+        "sendBody": true,
+        "contentType": "raw",
+        "rawContentType": "application/json",
+        "body": "={{ JSON.stringify({ callback_query_id: $('Parse Callback').first().json.callback_query_id, text: '' }) }}",
+        "options": {
+          "timeout": 5000,
+          "response": {
+            "response": {
+              "responseFormat": "json"
+            }
+          }
+        }
+      }
+    },
+    {
+      "id": "route-action",
+      "name": "Route Action",
+      "type": "n8n-nodes-base.switch",
+      "typeVersion": 1,
+      "position": [960, 0],
+      "parameters": {
+        "dataType": "string",
+        "value1": "={{ $('Parse Callback').first().json.action }}",
+        "rules": {
+          "rules": [
+            { "value2": "ignore" },
+            { "value2": "snooze" },
+            { "value2": "gen" }
+          ]
+        },
+        "fallbackOutput": 3
+      }
+    },
+    {
+      "id": "edit-message-ignored",
+      "name": "Edit Message Ignored",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [1200, -200],
+      "parameters": {
+        "method": "POST",
+        "url": "=https://api.telegram.org/bot{{ $env.TELEGRAM_HUNTER_BOT_TOKEN }}/editMessageText",
+        "sendBody": true,
+        "contentType": "raw",
+        "rawContentType": "application/json",
+        "body": "={{ JSON.stringify({ chat_id: $('Parse Callback').first().json.chat_id, message_id: $('Parse Callback').first().json.message_id, text: '❌ Offre ignorée.', parse_mode: 'Markdown', reply_markup: { inline_keyboard: [] } }) }}",
+        "options": {
+          "timeout": 5000,
+          "response": {
+            "response": {
+              "responseFormat": "json"
+            }
+          }
+        }
+      }
+    },
+    {
+      "id": "update-status-ignored",
+      "name": "Update Status Ignored",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [1440, -200],
+      "parameters": {
+        "method": "POST",
+        "url": "=http://127.0.0.1:{{ $env.HUNTER_BRIDGE_PORT ?? '18798' }}/sheets/update-status",
+        "sendBody": true,
+        "contentType": "raw",
+        "rawContentType": "application/json",
+        "body": "={{ JSON.stringify({ job_id: $('Parse Callback').first().json.job_id, status: 'ignored' }) }}",
+        "options": {
+          "timeout": 15000,
+          "response": {
+            "response": {
+              "responseFormat": "json"
+            }
+          }
+        }
+      }
+    },
+    {
+      "id": "edit-message-snoozed",
+      "name": "Edit Message Snoozed",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [1200, 0],
+      "parameters": {
+        "method": "POST",
+        "url": "=https://api.telegram.org/bot{{ $env.TELEGRAM_HUNTER_BOT_TOKEN }}/editMessageText",
+        "sendBody": true,
+        "contentType": "raw",
+        "rawContentType": "application/json",
+        "body": "={{ JSON.stringify({ chat_id: $('Parse Callback').first().json.chat_id, message_id: $('Parse Callback').first().json.message_id, text: '⏰ Reporté à demain.', parse_mode: 'Markdown', reply_markup: { inline_keyboard: [] } }) }}",
+        "options": {
+          "timeout": 5000,
+          "response": {
+            "response": {
+              "responseFormat": "json"
+            }
+          }
+        }
+      }
+    },
+    {
+      "id": "snooze-offer",
+      "name": "Snooze Offer",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [1440, 0],
+      "parameters": {
+        "method": "POST",
+        "url": "=http://127.0.0.1:{{ $env.HUNTER_BRIDGE_PORT ?? '18798' }}/sheets/snooze",
+        "sendBody": true,
+        "contentType": "raw",
+        "rawContentType": "application/json",
+        "body": "={{ JSON.stringify({ job_id: $('Parse Callback').first().json.job_id }) }}",
+        "options": {
+          "timeout": 15000,
+          "response": {
+            "response": {
+              "responseFormat": "json"
+            }
+          }
+        }
+      }
+    },
+    {
+      "id": "edit-message-generating",
+      "name": "Edit Message Generating",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [1200, 200],
+      "parameters": {
+        "method": "POST",
+        "url": "=https://api.telegram.org/bot{{ $env.TELEGRAM_HUNTER_BOT_TOKEN }}/editMessageText",
+        "sendBody": true,
+        "contentType": "raw",
+        "rawContentType": "application/json",
+        "body": "={{ JSON.stringify({ chat_id: $('Parse Callback').first().json.chat_id, message_id: $('Parse Callback').first().json.message_id, text: '⏳ Génération en cours...', parse_mode: 'Markdown', reply_markup: { inline_keyboard: [] } }) }}",
+        "options": {
+          "timeout": 5000,
+          "response": {
+            "response": {
+              "responseFormat": "json"
+            }
+          }
+        }
+      }
+    },
+    {
+      "id": "start-generation",
+      "name": "Start Generation",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [1440, 200],
+      "parameters": {
+        "method": "POST",
+        "url": "=http://127.0.0.1:{{ $env.HUNTER_BRIDGE_PORT ?? '18798' }}/generate",
+        "sendBody": true,
+        "contentType": "raw",
+        "rawContentType": "application/json",
+        "body": "={{ JSON.stringify({ job_id: $('Parse Callback').first().json.job_id }) }}",
+        "options": {
+          "timeout": 600000,
+          "response": {
+            "response": {
+              "responseFormat": "json"
+            }
+          }
+        }
+      }
+    },
+    {
+      "id": "edit-message-ready",
+      "name": "Edit Message Ready",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [1680, 200],
+      "parameters": {
+        "method": "POST",
+        "url": "=https://api.telegram.org/bot{{ $env.TELEGRAM_HUNTER_BOT_TOKEN }}/editMessageText",
+        "sendBody": true,
+        "contentType": "raw",
+        "rawContentType": "application/json",
+        "body": "={{ JSON.stringify({ chat_id: $('Parse Callback').first().json.chat_id, message_id: $('Parse Callback').first().json.message_id, text: '✅ *Documents prêts !*\\n*' + ($json.offer && $json.offer.title ? $json.offer.title : '') + '* @ *' + ($json.offer && $json.offer.company ? $json.offer.company : '') + '*\\n\\n📄 CV et lettre générés sur le serveur.', parse_mode: 'Markdown', reply_markup: { inline_keyboard: [] } }) }}",
+        "options": {
+          "timeout": 5000,
+          "response": {
+            "response": {
+              "responseFormat": "json"
+            }
+          }
+        }
+      }
+    },
+    {
+      "id": "callbacks-complete",
+      "name": "Callbacks Complete",
+      "type": "n8n-nodes-base.noOp",
+      "typeVersion": 1,
+      "position": [1920, 0],
+      "parameters": {}
+    }
+  ],
+  "connections": {
+    "Webhook Trigger": {
+      "main": [[{ "node": "Parse Callback", "type": "main", "index": 0 }]]
+    },
+    "Parse Callback": {
+      "main": [[{ "node": "Respond to Webhook", "type": "main", "index": 0 }]]
+    },
+    "Respond to Webhook": {
+      "main": [[{ "node": "Answer Callback Query", "type": "main", "index": 0 }]]
+    },
+    "Answer Callback Query": {
+      "main": [[{ "node": "Route Action", "type": "main", "index": 0 }]]
+    },
+    "Route Action": {
+      "main": [
+        [{ "node": "Edit Message Ignored", "type": "main", "index": 0 }],
+        [{ "node": "Edit Message Snoozed", "type": "main", "index": 0 }],
+        [{ "node": "Edit Message Generating", "type": "main", "index": 0 }],
+        [{ "node": "Callbacks Complete", "type": "main", "index": 0 }]
+      ]
+    },
+    "Edit Message Ignored": {
+      "main": [[{ "node": "Update Status Ignored", "type": "main", "index": 0 }]]
+    },
+    "Update Status Ignored": {
+      "main": [[{ "node": "Callbacks Complete", "type": "main", "index": 0 }]]
+    },
+    "Edit Message Snoozed": {
+      "main": [[{ "node": "Snooze Offer", "type": "main", "index": 0 }]]
+    },
+    "Snooze Offer": {
+      "main": [[{ "node": "Callbacks Complete", "type": "main", "index": 0 }]]
+    },
+    "Edit Message Generating": {
+      "main": [[{ "node": "Start Generation", "type": "main", "index": 0 }]]
+    },
+    "Start Generation": {
+      "main": [[{ "node": "Edit Message Ready", "type": "main", "index": 0 }]]
+    },
+    "Edit Message Ready": {
+      "main": [[{ "node": "Callbacks Complete", "type": "main", "index": 0 }]]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1",
+    "saveDataSuccessExecution": "all",
+    "saveExecutionProgress": true,
+    "callerPolicy": "workflowsFromSameOwner"
+  },
+  "staticData": null,
+  "meta": {
+    "templateCredsSetupCompleted": false,
+    "instanceId": "job-hunter"
+  },
+  "active": false,
+  "tags": [
+    { "name": "job-hunter" },
+    { "name": "epic-7-n8n-orchestration" },
+    { "name": "sprint-1" }
+  ]
+}

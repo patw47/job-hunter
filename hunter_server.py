@@ -23,7 +23,7 @@ from __future__ import annotations
 import logging
 from http.server import HTTPServer, BaseHTTPRequestHandler
 import subprocess, json, os, time
-from datetime import datetime
+from datetime import datetime, timedelta
 
 logger = logging.getLogger(__name__)
 
@@ -251,6 +251,146 @@ def _handle_write_scan_results(body: dict) -> dict:
     return {"ok": True, "written_count": len(offers), "scan_date": scan_date}
 
 
+def _handle_read_pending_matches() -> dict:
+    """Read PENDING_MATCHES, filtering out offers snoozed until a future date."""
+    import gspread
+    from deduplication import CREDS_PATH, SPREADSHEET_NAME
+
+    gc = gspread.service_account(filename=CREDS_PATH)
+    ss = gc.open(SPREADSHEET_NAME)
+    sheet = ss.worksheet("PENDING_MATCHES")
+    all_rows = sheet.get_all_values()
+
+    today_str = _today_ddmmyyyy()
+    today_dt = datetime.strptime(today_str, "%d.%m.%Y")
+
+    offers: list[dict] = []
+    snoozed_count = 0
+
+    for row in all_rows:
+        if not row or not row[0] or row[0] == "job_id":
+            continue
+        snooze_until_str: str = row[10] if len(row) > 10 else ""
+        if snooze_until_str:
+            try:
+                snooze_dt = datetime.strptime(snooze_until_str, "%d.%m.%Y")
+                if snooze_dt > today_dt:
+                    snoozed_count += 1
+                    continue
+            except ValueError:
+                pass
+        offers.append({
+            "job_id": row[0],
+            "date_scanned": row[1] if len(row) > 1 else "",
+            "title": row[2] if len(row) > 2 else "",
+            "company": row[3] if len(row) > 3 else "",
+            "location": row[4] if len(row) > 4 else "",
+            "url": row[5] if len(row) > 5 else "",
+            "match_rate": row[6] if len(row) > 6 else "",
+            "skills_found": row[7] if len(row) > 7 else "",
+            "source": row[8] if len(row) > 8 else "",
+            "rank": row[9] if len(row) > 9 else "",
+        })
+
+    return {"ok": True, "offers": offers, "count": len(offers), "snoozed_count": snoozed_count}
+
+
+def _handle_update_status(body: dict) -> dict:
+    """Update the status column in MATCHES for a given job_id."""
+    import gspread
+    from deduplication import CREDS_PATH, SPREADSHEET_NAME
+
+    job_id: str = body.get("job_id", "")
+    status: str = body.get("status", "")
+    if not job_id or not status:
+        return {"ok": False, "error": "job_id and status required", "updated": False}
+
+    gc = gspread.service_account(filename=CREDS_PATH)
+    ss = gc.open(SPREADSHEET_NAME)
+    sheet = ss.worksheet("MATCHES")
+    cell = sheet.find(job_id, in_column=1)
+    if cell is None:
+        return {"ok": True, "updated": False}
+    sheet.update_cell(cell.row, 11, status)  # col 11 = status (1-indexed)
+    return {"ok": True, "updated": True}
+
+
+def _handle_snooze(body: dict) -> dict:
+    """Mark an offer in PENDING_MATCHES as snoozed until the given date (default: tomorrow)."""
+    import gspread
+    from deduplication import CREDS_PATH, SPREADSHEET_NAME
+
+    job_id: str = body.get("job_id", "")
+    if not job_id:
+        return {"ok": False, "error": "job_id required"}
+
+    snooze_until: str = body.get("snooze_until") or (
+        (datetime.now() + timedelta(days=1)).strftime("%d.%m.%Y")
+    )
+
+    gc = gspread.service_account(filename=CREDS_PATH)
+    ss = gc.open(SPREADSHEET_NAME)
+    sheet = ss.worksheet("PENDING_MATCHES")
+    cell = sheet.find(job_id, in_column=1)
+    if cell is None:
+        return {"ok": False, "error": f"job_id {job_id} not found in PENDING_MATCHES"}
+    sheet.update_cell(cell.row, 11, snooze_until)  # col 11 = snooze_until (new column, 1-indexed)
+    return {"ok": True, "snoozed_until": snooze_until}
+
+
+def _handle_generate(body: dict) -> dict:
+    """Generate CV and cover letter for a job offer found in MATCHES by job_id."""
+    import gspread
+    from deduplication import CREDS_PATH, SPREADSHEET_NAME
+    from pathlib import Path
+
+    job_id: str = body.get("job_id", "")
+    if not job_id:
+        return {"ok": False, "error": "job_id required"}
+
+    gc = gspread.service_account(filename=CREDS_PATH)
+    ss = gc.open(SPREADSHEET_NAME)
+    matches_sheet = ss.worksheet("MATCHES")
+    cell = matches_sheet.find(job_id, in_column=1)
+    if cell is None:
+        return {"ok": False, "error": f"job_id {job_id} not found in MATCHES"}
+
+    row = matches_sheet.row_values(cell.row)
+    offer_data = {
+        "job_id": job_id,
+        "title": row[2] if len(row) > 2 else "",
+        "company": row[3] if len(row) > 3 else "",
+        "location": row[4] if len(row) > 4 else "",
+        "url": row[6] if len(row) > 6 else "",
+        "skills_found": row[9].split(", ") if len(row) > 9 and row[9] else [],
+    }
+
+    try:
+        cv_text = extract_inner(call_hunter(build_message("cv-rewriter", offer_data), "rewrite-cv", timeout=300))
+        letter_text = extract_inner(call_hunter(build_message("cover-letter-writer", offer_data), "cover-letter", timeout=300))
+    except Exception as e:
+        return {"ok": False, "error": f"generation failed: {e}", "job_id": job_id}
+
+    output_dir = Path(f"/opt/apps/job-hunter/generated/{job_id}")
+    output_dir.mkdir(parents=True, exist_ok=True)
+    cv_path = output_dir / "cv.md"
+    letter_path = output_dir / "cover_letter.md"
+    cv_path.write_text(cv_text, encoding="utf-8")
+    letter_path.write_text(letter_text, encoding="utf-8")
+
+    matches_sheet.update_cell(cell.row, 11, "ready")
+    matches_sheet.update_cell(cell.row, 12, str(cv_path))
+    matches_sheet.update_cell(cell.row, 13, str(letter_path))
+
+    return {
+        "ok": True,
+        "job_id": job_id,
+        "cv_path": str(cv_path),
+        "letter_path": str(letter_path),
+        "offer": {"title": offer_data["title"], "company": offer_data["company"]},
+    }
+
+
 def build_message(skill, brief):
     return (
         f"[{skill.upper()} SKILL]\n"
@@ -272,6 +412,11 @@ class Handler(BaseHTTPRequestHandler):
     def do_GET(self):
         if self.path == "/health":
             self._send(200, {"status": "ok", "service": "hunter-bridge", "agent": AGENT_ID, "port": PORT})
+        elif self.path == "/sheets/pending-matches":
+            try:
+                self._send(200, _handle_read_pending_matches())
+            except Exception as e:
+                self._send(200, {"ok": False, "error": str(e)})
         else:
             self._send(404, {"error": "not found"})
 
@@ -281,6 +426,9 @@ class Handler(BaseHTTPRequestHandler):
             "/layer1": _handle_layer1,
             "/layer2": _handle_layer2,
             "/sheets/write-scan-results": _handle_write_scan_results,
+            "/sheets/update-status": _handle_update_status,
+            "/sheets/snooze": _handle_snooze,
+            "/generate": _handle_generate,
         }
         if self.path in _PIPELINE_HANDLERS:
             length = int(self.headers.get("Content-Length", 0))
