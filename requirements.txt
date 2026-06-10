@@ -1,0 +1,8 @@
+# Job Hunter — runtime deps
+# Scraping Indeed/LinkedIn (indeed_scraper.py)
+playwright>=1.44
+beautifulsoup4>=4.12
+# Google Sheets tracker (test_sheets.py)
+gspread>=6.0
+# Note : après `pip install -r requirements.txt`, lancer `playwright install chromium`
+# pour télécharger le navigateur (non géré par pip).
