@@ -41,3 +41,5 @@ Lors de chaque skill, lire les fichiers de contexte pertinents :
 
 - **Haute** (jan–avr, sep–nov) : volume maximal, notifications quotidiennes.
 - **Basse** (juil–aoû, déc) : réduire le seuil à 50% si résultats < 5/jour.
+
+**Feedback log :**

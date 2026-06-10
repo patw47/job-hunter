@@ -182,6 +182,67 @@ class TestMarkSentCommand(unittest.TestCase):
         assert result["ok"] is False
 
 
+# ── /feedback ─────────────────────────────────────────────────────────────────
+
+
+class TestFeedbackCommand(unittest.TestCase):
+    def test_add_calls_add_feedback(self) -> None:
+        with patch("voice_profile_manager.add_feedback") as mock_add, \
+             patch("voice_profile_manager.get_default_soul_path", return_value=Path("/tmp/soul.md")):
+            result = _run(["feedback", "add", "n'utilise", "plus", "résultats-driven"])
+        assert result["ok"] is True
+        mock_add.assert_called_once()
+        call_text = mock_add.call_args[0][1]
+        assert "résultats-driven" in call_text
+
+    def test_add_multi_word_text_joined(self) -> None:
+        with patch("voice_profile_manager.add_feedback") as mock_add, \
+             patch("voice_profile_manager.get_default_soul_path", return_value=Path("/tmp/soul.md")):
+            _run(["feedback", "add", "word1", "word2", "word3"])
+        assert mock_add.call_args[0][1] == "word1 word2 word3"
+
+    def test_add_missing_text_returns_error(self) -> None:
+        with patch("voice_profile_manager.get_default_soul_path", return_value=Path("/tmp/soul.md")):
+            result = _run(["feedback", "add"])
+        assert result["ok"] is False
+
+    def test_remove_calls_remove_feedback(self) -> None:
+        with patch("voice_profile_manager.remove_feedback") as mock_rm, \
+             patch("voice_profile_manager.get_default_soul_path", return_value=Path("/tmp/soul.md")):
+            result = _run(["feedback", "remove", "old", "entry"])
+        assert result["ok"] is True
+        mock_rm.assert_called_once()
+        assert mock_rm.call_args[0][1] == "old entry"
+
+    def test_remove_missing_text_returns_error(self) -> None:
+        with patch("voice_profile_manager.get_default_soul_path", return_value=Path("/tmp/soul.md")):
+            result = _run(["feedback", "remove"])
+        assert result["ok"] is False
+
+    def test_list_with_entries_returns_content(self) -> None:
+        with patch("voice_profile_manager.list_feedback", return_value="- [2025-01-01] ADD: \"foo\""), \
+             patch("voice_profile_manager.get_default_soul_path", return_value=Path("/tmp/soul.md")):
+            result = _run(["feedback", "list"])
+        assert result["ok"] is True
+        assert "foo" in result["message"]
+
+    def test_list_empty_returns_ok(self) -> None:
+        with patch("voice_profile_manager.list_feedback", return_value=""), \
+             patch("voice_profile_manager.get_default_soul_path", return_value=Path("/tmp/soul.md")):
+            result = _run(["feedback", "list"])
+        assert result["ok"] is True
+        assert "vide" in result["message"]
+
+    def test_unknown_subcmd_returns_error(self) -> None:
+        with patch("voice_profile_manager.get_default_soul_path", return_value=Path("/tmp/soul.md")):
+            result = _run(["feedback", "unknown"])
+        assert result["ok"] is False
+
+    def test_missing_subcmd_returns_error(self) -> None:
+        result = _run(["feedback"])
+        assert result["ok"] is False
+
+
 # ── unknown / edge cases ──────────────────────────────────────────────────────
 
 

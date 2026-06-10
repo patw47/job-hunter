@@ -22,7 +22,7 @@
       "typeVersion": 2,
       "position": [220, 0],
       "parameters": {
-        "jsCode": "// Determine update type and build notifier command args.\n// Supported:\n//   callback_query with data 'mark_sent:<job_id>'\n//   message text '/status <job_id>'\n//   message text '/update <job_id> <statut>'\n//   message text '/note <job_id> <texte libre>'\nconst body = $input.first().json.body || $input.first().json;\nlet chatId, callbackQueryId, commandArgs;\n\nif (body.callback_query) {\n  const cq = body.callback_query;\n  chatId = String(cq.message.chat.id);\n  callbackQueryId = cq.id;\n  // data format: 'action:job_id'\n  const colonIdx = cq.data.indexOf(':');\n  const action = colonIdx >= 0 ? cq.data.slice(0, colonIdx) : cq.data;\n  const jobId = colonIdx >= 0 ? cq.data.slice(colonIdx + 1) : '';\n  commandArgs = `${action} ${jobId}`.trim();\n} else if (body.message && body.message.text && body.message.text.startsWith('/')) {\n  const msg = body.message;\n  chatId = String(msg.chat.id);\n  callbackQueryId = null;\n  // Strip leading '/' — notifier expects 'status <id>', not '/status <id>'\n  commandArgs = msg.text.trim().slice(1);\n} else {\n  // Non-command updates (stickers, etc.) — ignore silently\n  return [];\n}\n\nreturn [{ json: { chatId, callbackQueryId, commandArgs } }];"
+        "jsCode": "// Determine update type and build notifier command args.\n// Supported:\n//   callback_query with data 'mark_sent:<job_id>'\n//   message text '/status <job_id>'\n//   message text '/update <job_id> <statut>'\n//   message text '/note <job_id> <texte libre>'\n//   message text '/feedback <add|remove|list> [texte]'\nconst body = $input.first().json.body || $input.first().json;\nlet chatId, callbackQueryId, commandArgs;\n\nif (body.callback_query) {\n  const cq = body.callback_query;\n  chatId = String(cq.message.chat.id);\n  callbackQueryId = cq.id;\n  // data format: 'action:job_id'\n  const colonIdx = cq.data.indexOf(':');\n  const action = colonIdx >= 0 ? cq.data.slice(0, colonIdx) : cq.data;\n  const jobId = colonIdx >= 0 ? cq.data.slice(colonIdx + 1) : '';\n  commandArgs = `${action} ${jobId}`.trim();\n} else if (body.message && body.message.text && body.message.text.startsWith('/')) {\n  const msg = body.message;\n  chatId = String(msg.chat.id);\n  callbackQueryId = null;\n  // Strip leading '/' — notifier expects 'status <id>', not '/status <id>'\n  commandArgs = msg.text.trim().slice(1);\n} else {\n  // Non-command updates (stickers, etc.) — ignore silently\n  return [];\n}\n\nreturn [{ json: { chatId, callbackQueryId, commandArgs } }];"
       }
     },
     {
@@ -129,6 +129,6 @@
   },
   "meta": {
     "instanceId": "job-hunter-telegram-commands-001",
-    "notes": "Inline button 'Marquer Envoyé' in post-generation notifications must use callback_data: 'mark_sent:{job_id}' (64-char SHA-256 hex). This workflow processes both that callback and the /status, /update, /note text commands."
+    "notes": "Inline button 'Marquer Envoyé' in post-generation notifications must use callback_data: 'mark_sent:{job_id}' (64-char SHA-256 hex). This workflow processes both that callback and the /status, /update, /note, /feedback text commands."
   }
 }

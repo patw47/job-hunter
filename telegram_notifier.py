@@ -9,6 +9,7 @@ Usage:
     telegram_notifier.py update <job_id> <statut>
     telegram_notifier.py note <job_id> <texte libre>
     telegram_notifier.py mark_sent <job_id>
+    telegram_notifier.py feedback <add|remove|list> [texte]
 
 job_id must be a 64-character lowercase hex SHA-256 digest.
 Stdout: single JSON line — {"ok": bool, "message": str}
@@ -16,12 +17,14 @@ Exit 0 always (caller reads "ok" field, not exit code).
 """
 from __future__ import annotations
 
+import datetime
 import json
 import logging
 import re
 import sys
 
 import matches_store
+import voice_profile_manager
 
 logging.basicConfig(
     level=logging.INFO,
@@ -112,8 +115,45 @@ def main(argv: list[str]) -> int:
         except KeyError:
             _result(False, f"❌ Offre introuvable (ID : {job_id[:12]}…)")
 
+    elif command == "feedback":
+        if len(argv) < 2:
+            _result(False, "❌ Usage : feedback <add|remove|list> [texte]")
+            return 0
+        subcmd = argv[1]
+        soul_path = voice_profile_manager.get_default_soul_path()
+
+        if subcmd == "add":
+            if len(argv) < 3:
+                _result(False, "❌ Usage : feedback add <texte>")
+                return 0
+            texte = " ".join(argv[2:])
+            today = datetime.date.today().isoformat()
+            voice_profile_manager.add_feedback(soul_path, texte, today)
+            _result(True, f'✅ Feedback ajouté : "{texte}"')
+
+        elif subcmd == "remove":
+            if len(argv) < 3:
+                _result(False, "❌ Usage : feedback remove <texte>")
+                return 0
+            texte = " ".join(argv[2:])
+            voice_profile_manager.remove_feedback(soul_path, texte)
+            _result(True, f'✅ Feedback retiré : "{texte}"')
+
+        elif subcmd == "list":
+            contenu = voice_profile_manager.list_feedback(soul_path)
+            if contenu:
+                _result(True, f"📝 Feedback log :\n{contenu}")
+            else:
+                _result(True, "📝 Feedback log vide.")
+
+        else:
+            _result(
+                False,
+                f"❌ Sous-commande inconnue : {subcmd!r}\nUsage : feedback <add|remove|list>",
+            )
+
     else:
-        _result(False, f"❌ Commande inconnue : {command!r}\nCommandes : status | update | note | mark_sent")
+        _result(False, f"❌ Commande inconnue : {command!r}\nCommandes : status | update | note | mark_sent | feedback")
 
     return 0
 
