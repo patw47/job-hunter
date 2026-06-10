@@ -1,0 +1,144 @@
+{
+  "name": "Job Hunter — Weekly Report (Friday 18h)",
+  "nodes": [
+    {
+      "id": "schedule-trigger",
+      "name": "Schedule Trigger",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.1,
+      "position": [0, 0],
+      "parameters": {
+        "rule": {
+          "interval": [
+            {
+              "field": "cronExpression",
+              "expression": "0 18 * * 5"
+            }
+          ]
+        }
+      }
+    },
+    {
+      "id": "run-weekly-stats",
+      "name": "Weekly Stats",
+      "type": "n8n-nodes-base.executeCommand",
+      "typeVersion": 1,
+      "position": [240, 0],
+      "parameters": {
+        "command": "/home/thehunter/venv/bin/python3 /opt/apps/job-hunter/weekly_stats.py"
+      }
+    },
+    {
+      "id": "parse-stats-output",
+      "name": "Parse Stats Output",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [480, 0],
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "jsCode": "const result = $input.first().json;\nconst exitCode = result.exitCode ?? result.returnCode ?? 0;\nconst stdout = (result.stdout ?? '').trim();\nconst stderr = (result.stderr ?? '').trim();\n\nif (exitCode !== 0) {\n  throw new Error(`weekly_stats.py exit ${exitCode}: ${stderr.slice(-300)}`);\n}\n\nlet stats;\ntry {\n  stats = JSON.parse(stdout);\n} catch (err) {\n  throw new Error(`weekly_stats.py non-JSON output: ${stdout.slice(0, 200)}`);\n}\n\nreturn [{ json: stats }];"
+      }
+    },
+    {
+      "id": "call-hunter-bridge",
+      "name": "POST /report",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [720, 0],
+      "parameters": {
+        "method": "POST",
+        "url": "=http://127.0.0.1:{{ $env.HUNTER_BRIDGE_PORT ?? '18798' }}/report",
+        "sendBody": true,
+        "contentType": "raw",
+        "rawContentType": "application/json",
+        "body": "={{ JSON.stringify($json) }}",
+        "options": {
+          "timeout": 120000,
+          "response": {
+            "response": {
+              "responseFormat": "json"
+            }
+          }
+        }
+      }
+    },
+    {
+      "id": "check-report-result",
+      "name": "Check Report Result",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [960, 0],
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "jsCode": "const result = $input.first().json;\nif (!result.ok) {\n  throw new Error(`/report failed: ${result.error ?? JSON.stringify(result)}`);\n}\nreturn [{ json: { report: result.result, ok: true } }];"
+      }
+    },
+    {
+      "id": "send-telegram",
+      "name": "Send Telegram",
+      "type": "n8n-nodes-base.telegram",
+      "typeVersion": 1.2,
+      "position": [1200, 0],
+      "parameters": {
+        "resource": "message",
+        "operation": "sendMessage",
+        "chatId": "={{ $env.TELEGRAM_CHAT_ID }}",
+        "text": "={{ $json.report }}",
+        "additionalFields": {
+          "parse_mode": "Markdown"
+        }
+      },
+      "credentials": {
+        "telegramApi": {
+          "id": "telegram-bot",
+          "name": "Telegram Bot"
+        }
+      }
+    }
+  ],
+  "connections": {
+    "Schedule Trigger": {
+      "main": [
+        [{"node": "Weekly Stats", "type": "main", "index": 0}]
+      ]
+    },
+    "Weekly Stats": {
+      "main": [
+        [{"node": "Parse Stats Output", "type": "main", "index": 0}]
+      ]
+    },
+    "Parse Stats Output": {
+      "main": [
+        [{"node": "POST /report", "type": "main", "index": 0}]
+      ]
+    },
+    "POST /report": {
+      "main": [
+        [{"node": "Check Report Result", "type": "main", "index": 0}]
+      ]
+    },
+    "Check Report Result": {
+      "main": [
+        [{"node": "Send Telegram", "type": "main", "index": 0}]
+      ]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1",
+    "saveDataSuccessExecution": "all",
+    "saveExecutionProgress": true,
+    "callerPolicy": "workflowsFromSameOwner"
+  },
+  "staticData": null,
+  "meta": {
+    "templateCredsSetupCompleted": false,
+    "instanceId": "job-hunter"
+  },
+  "id": "job-hunter-weekly-report-001",
+  "active": false,
+  "tags": [
+    {"name": "job-hunter"},
+    {"name": "epic-6-application-tracking"},
+    {"name": "sprint-1-weekly-reporter"}
+  ]
+}

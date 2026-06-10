@@ -1,12 +1,18 @@
 from __future__ import annotations
 
+import datetime
 import hashlib
 import json
 import logging
 import os
+import re
+import sys
 import urllib.error
 import urllib.request
 from urllib.parse import urlparse
+
+import matches_store
+import voice_profile_manager
 
 logger = logging.getLogger(__name__)
 
@@ -21,6 +27,8 @@ _FLAG_MAP: dict[str, str] = {
     "SE": "🇸🇪", "SG": "🇸🇬", "UA": "🇺🇦", "US": "🇺🇸",
     "ZA": "🇿🇦",
 }
+
+_JOB_ID_RE: re.Pattern[str] = re.compile(r"^[0-9a-f]{64}$")
 
 
 def _flag_emoji(pays: str) -> str:
@@ -174,11 +182,7 @@ def send_digest(offers: list[dict], bot_token: str, chat_id: str) -> None:
 
 
 def send_match_card(offer: dict, bot_token: str, chat_id: str) -> None:
-    """Send an individual match card for an offer with ≥80% match rate.
-
-    Callbacks are emitted with structured callback_data (action:url_hash) but
-    are not processed here — callback handling belongs to Sprint 2.
-    """
+    """Send an individual match card for an offer with ≥80% match rate."""
     url = str(offer.get("url", ""))
     h = _url_hash(url)
     text = _build_card_text(offer)
@@ -244,7 +248,7 @@ def edit_message_text(
 def send_snooze_renotifications(
     bot_token: str, chat_id: str, creds_path: str | None = None
 ) -> int:
-    """Re-send snoozed offers as individual cards (called at 12h30 alongside digest).
+    """Re-send snoozed offers as individual cards.
 
     Returns number of cards sent.
     """
@@ -265,9 +269,137 @@ def send_snooze_renotifications(
     return sent
 
 
+# --- Command dispatcher (Epic 6) ---
+
+def _result(ok: bool, message: str) -> None:
+    print(json.dumps({"ok": ok, "message": message}, ensure_ascii=False))
+
+
+def _valid_job_id(job_id: str) -> bool:
+    return bool(_JOB_ID_RE.match(job_id))
+
+
+def main(argv: list[str]) -> int:
+    """Dispatch command from argv, print JSON result. Always returns 0."""
+    if not argv:
+        _result(False, "❌ Usage : telegram_notifier.py <commande> <args…>")
+        return 0
+
+    command = argv[0]
+
+    if command == "status":
+        if len(argv) != 2:
+            _result(False, "❌ Usage : status <job_id>")
+            return 0
+        job_id = argv[1]
+        if not _valid_job_id(job_id):
+            _result(False, f"❌ ID d'offre invalide : {job_id[:20]}…")
+            return 0
+        try:
+            sheet = matches_store.open_matches()
+            status = matches_store.get_status(sheet, job_id)
+            _result(True, f"📋 Statut actuel : {status or '(non défini)'}")
+        except KeyError:
+            _result(False, f"❌ Offre introuvable (ID : {job_id[:12]}…)")
+
+    elif command == "update":
+        if len(argv) != 3:
+            _result(False, "❌ Usage : update <job_id> <statut>")
+            return 0
+        job_id, statut = argv[1], argv[2]
+        if not _valid_job_id(job_id):
+            _result(False, f"❌ ID d'offre invalide : {job_id[:20]}…")
+            return 0
+        try:
+            sheet = matches_store.open_matches()
+            matches_store.set_status(sheet, job_id, statut)
+            _result(True, f"✅ Statut mis à jour → {statut}")
+        except ValueError:
+            valid = " | ".join(sorted(matches_store.VALID_STATUSES))
+            _result(False, f"❌ Statut invalide : {statut!r}\nValeurs acceptées : {valid}")
+        except KeyError:
+            _result(False, f"❌ Offre introuvable (ID : {job_id[:12]}…)")
+
+    elif command == "note":
+        if len(argv) < 3:
+            _result(False, "❌ Usage : note <job_id> <texte>")
+            return 0
+        job_id = argv[1]
+        texte = " ".join(argv[2:])
+        if not _valid_job_id(job_id):
+            _result(False, f"❌ ID d'offre invalide : {job_id[:20]}…")
+            return 0
+        try:
+            sheet = matches_store.open_matches()
+            matches_store.set_note(sheet, job_id, texte)
+            _result(True, "📝 Note enregistrée.")
+        except KeyError:
+            _result(False, f"❌ Offre introuvable (ID : {job_id[:12]}…)")
+
+    elif command == "mark_sent":
+        if len(argv) != 2:
+            _result(False, "❌ Usage : mark_sent <job_id>")
+            return 0
+        job_id = argv[1]
+        if not _valid_job_id(job_id):
+            _result(False, f"❌ ID d'offre invalide : {job_id[:20]}…")
+            return 0
+        try:
+            sheet = matches_store.open_matches()
+            matches_store.set_status(sheet, job_id, "Envoyé")
+            _result(True, "✅ Candidature marquée Envoyé.")
+        except KeyError:
+            _result(False, f"❌ Offre introuvable (ID : {job_id[:12]}…)")
+
+    elif command == "feedback":
+        if len(argv) < 2:
+            _result(False, "❌ Usage : feedback <add|remove|list> [texte]")
+            return 0
+        subcmd = argv[1]
+        soul_path = voice_profile_manager.get_default_soul_path()
+
+        if subcmd == "add":
+            if len(argv) < 3:
+                _result(False, "❌ Usage : feedback add <texte>")
+                return 0
+            texte = " ".join(argv[2:])
+            today = datetime.date.today().isoformat()
+            voice_profile_manager.add_feedback(soul_path, texte, today)
+            _result(True, f'✅ Feedback ajouté : "{texte}"')
+
+        elif subcmd == "remove":
+            if len(argv) < 3:
+                _result(False, "❌ Usage : feedback remove <texte>")
+                return 0
+            texte = " ".join(argv[2:])
+            voice_profile_manager.remove_feedback(soul_path, texte)
+            _result(True, f'✅ Feedback retiré : "{texte}"')
+
+        elif subcmd == "list":
+            contenu = voice_profile_manager.list_feedback(soul_path)
+            if contenu:
+                _result(True, f"📝 Feedback log :\n{contenu}")
+            else:
+                _result(True, "📝 Feedback log vide.")
+
+        else:
+            _result(
+                False,
+                f"❌ Sous-commande inconnue : {subcmd!r}\nUsage : feedback <add|remove|list>",
+            )
+
+    else:
+        _result(False, f"❌ Commande inconnue : {command!r}\nCommandes : status | update | note | mark_sent | feedback")
+
+    return 0
+
+
 if __name__ == "__main__":
+    _DISPATCH_COMMANDS = {"status", "update", "note", "mark_sent", "feedback"}
+    if len(sys.argv) > 1 and sys.argv[1] in _DISPATCH_COMMANDS:
+        sys.exit(main(sys.argv[1:]))
+
     import argparse
-    import sys
 
     logging.basicConfig(level=logging.INFO, format="%(levelname)s %(name)s: %(message)s")
 

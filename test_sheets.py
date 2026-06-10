@@ -29,7 +29,7 @@ HEADERS: Final[dict[str, list[str]]] = {
     "MATCHES": [
         "job_id", "date_scanned", "title", "company", "location", "remote",
         "url", "source", "match_rate", "skills_found", "status",
-        "cv_drive_link", "letter_drive_link", "applied_at", "snooze_count",
+        "cv_drive_link", "letter_drive_link", "applied_at", "notes", "snooze_count",
     ],
     "SCANNED_HASHES": [
         "sha256", "date_scanned", "url", "title", "company", "source",
@@ -44,7 +44,7 @@ TEST_ROWS: Final[dict[str, list[str]]] = {
     "MATCHES": [
         SENTINEL_PREFIX, "2026-01-01", "Test Job", "Test Corp", "Remote", "yes",
         "https://example.com/job/1", "indeed", "75.0", "python,llm",
-        "new", "", "", "", "0",
+        "new", "", "", "", "", "0",
     ],
     "SCANNED_HASHES": [
         SENTINEL_PREFIX, "2026-01-01", "https://example.com/job/1",
@@ -149,7 +149,11 @@ def phase2_open(r: Results, gc: gspread.Client, creds: dict[str, Any]) -> gsprea
         return None
 
 
+<<<<<<< feat/epic-6---application-tracking-37a681d3
+def check_tab(r: Results, spreadsheet: gspread.Spreadsheet, tab_name: str) -> None:
+=======
 def _check_tab(r: Results, spreadsheet: gspread.Spreadsheet, tab_name: str) -> None:
+>>>>>>> main
     """Run phases 3–7 for one tab: existence, headers, write, read-back, cleanup."""
     expected = HEADERS[tab_name]
     print(f"\n--- {tab_name} ---")
@@ -256,7 +260,11 @@ def main() -> int:
         return 1
 
     for tab in ("MATCHES", "SCANNED_HASHES", "PENDING_MATCHES"):
+<<<<<<< feat/epic-6---application-tracking-37a681d3
+        check_tab(r, spreadsheet, tab)
+=======
         _check_tab(r, spreadsheet, tab)
+>>>>>>> main
 
     print(f"\n{r.summary()}")
     return 1 if r.failed > 0 else 0
