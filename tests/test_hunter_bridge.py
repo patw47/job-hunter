@@ -396,5 +396,302 @@ class TestRewriteCvEndpoint(unittest.TestCase):
         assert filename.endswith(".md")
 
 
+# ── parse_letter_wrapper ──────────────────────────────────────────────────────
+
+
+def _fake_openclaw_letter_stdout(letter_body: str = "Dear Hiring Manager,\n\nI built systems.") -> str:
+    return json.dumps({"result": {"finalAssistantVisibleText": f"[LETTER_START]\n{letter_body}\n[LETTER_END]"}})
+
+
+class TestParseLetterWrapper(unittest.TestCase):
+    def test_happy_path(self) -> None:
+        raw = "[LETTER_START]\nDear Hiring Manager,\n\nI built systems.\n[LETTER_END]"
+        assert hb.parse_letter_wrapper(raw) == "Dear Hiring Manager,\n\nI built systems."
+
+    def test_extra_content_outside_ignored(self) -> None:
+        raw = "preamble\n[LETTER_START]\nContent.\n[LETTER_END]\npostamble"
+        assert hb.parse_letter_wrapper(raw) == "Content."
+
+    def test_missing_start_raises(self) -> None:
+        with self.assertRaises(ValueError) as ctx:
+            hb.parse_letter_wrapper("Content.\n[LETTER_END]")
+        assert "[LETTER_START]" in str(ctx.exception)
+
+    def test_missing_end_raises(self) -> None:
+        with self.assertRaises(ValueError) as ctx:
+            hb.parse_letter_wrapper("[LETTER_START]\nContent.")
+        assert "[LETTER_END]" in str(ctx.exception)
+
+    def test_only_first_start_and_end_used(self) -> None:
+        raw = "[LETTER_START]\nFirst.\n[LETTER_END]\n[LETTER_START]\nSecond.\n[LETTER_END]"
+        assert hb.parse_letter_wrapper(raw) == "First."
+
+
+# ── generate_letter_filename ──────────────────────────────────────────────────
+
+
+class TestGenerateLetterFilename(unittest.TestCase):
+    def test_happy_path(self) -> None:
+        name = hb.generate_letter_filename("AcmeCorp", today="2026-06-10")
+        assert name == "LM_Patricia_Wintrebert_AcmeCorp_2026-06-10.md"
+
+    def test_spaces_normalized(self) -> None:
+        name = hb.generate_letter_filename("Acme Corp Ltd", today="2026-06-10")
+        assert " " not in name
+        assert "2026-06-10" in name
+
+    def test_special_chars_removed(self) -> None:
+        name = hb.generate_letter_filename("Acme/Corp & Co.", today="2026-06-10")
+        company_part = name.replace(".md", "").split("_2026-06-10")[0]
+        assert "/" not in company_part
+        assert "&" not in company_part
+        assert "." not in company_part
+
+    def test_date_format_iso(self) -> None:
+        name = hb.generate_letter_filename("X", today="2026-06-10")
+        assert "2026-06-10" in name
+
+    def test_uses_today_when_no_date_arg(self) -> None:
+        name = hb.generate_letter_filename("TestCo")
+        assert name.startswith("LM_Patricia_Wintrebert_TestCo_")
+        assert name.endswith(".md")
+
+    def test_prefix_is_lm_not_cv(self) -> None:
+        name = hb.generate_letter_filename("AcmeCorp", today="2026-06-10")
+        assert name.startswith("LM_")
+        assert not name.startswith("CV_")
+
+
+# ── count_words ───────────────────────────────────────────────────────────────
+
+
+class TestCountWords(unittest.TestCase):
+    def test_single_word(self) -> None:
+        assert hb.count_words("hello") == 1
+
+    def test_empty_string(self) -> None:
+        assert hb.count_words("") == 0
+
+    def test_multiline_text(self) -> None:
+        assert hb.count_words("one two\nthree  four") == 4
+
+    def test_markdown_headers_counted(self) -> None:
+        assert hb.count_words("# Title\n\nTwo words.") == 4
+
+    def test_whitespace_only(self) -> None:
+        assert hb.count_words("   \n  ") == 0
+
+
+# ── call_cover_letter_writer (subprocess mocked) ─────────────────────────────
+
+
+class TestCallCoverLetterWriter(unittest.TestCase):
+    def test_openclaw_agent_command_used(self) -> None:
+        mock_result = MagicMock()
+        mock_result.stdout = ""
+        with patch("subprocess.run", return_value=mock_result) as mock_run:
+            hb.call_cover_letter_writer({})
+        cmd = mock_run.call_args[0][0]
+        assert cmd[0] == "openclaw"
+        assert "agent" in cmd
+
+    def test_message_contains_skill_tag(self) -> None:
+        mock_result = MagicMock()
+        mock_result.stdout = _fake_openclaw_letter_stdout()
+        with patch("subprocess.run", return_value=mock_result) as mock_run:
+            hb.call_cover_letter_writer({"company": "Acme", "role": "Engineer"})
+        message_arg = " ".join(mock_run.call_args[0][0])
+        assert "COVER-LETTER-WRITER SKILL" in message_arg
+
+    def test_brief_fields_in_message(self) -> None:
+        mock_result = MagicMock()
+        mock_result.stdout = ""
+        with patch("subprocess.run", return_value=mock_result) as mock_run:
+            hb.call_cover_letter_writer({"company": "Acme", "role": "Engineer", "language": "en"})
+        call_args = mock_run.call_args[0][0]
+        full_cmd = " ".join(call_args)
+        assert "Acme" in full_cmd
+
+    def test_timeout_propagates(self) -> None:
+        with patch("subprocess.run", side_effect=subprocess.TimeoutExpired("openclaw", 600)):
+            with self.assertRaises(subprocess.TimeoutExpired):
+                hb.call_cover_letter_writer({})
+
+
+# ── POST /cover-letter (FastAPI TestClient) ───────────────────────────────────
+
+
+@unittest.skipUnless(_HAS_FASTAPI_TEST, "fastapi[testclient] not installed")
+class TestCoverLetterEndpoint(unittest.TestCase):
+    def setUp(self) -> None:
+        from fastapi.testclient import TestClient
+        hb._cl_rate_limiter.reset()
+        hb._cv_rate_limiter.reset()
+        self.client = TestClient(hb.app)
+
+    def _mock_openclaw(self, letter_body: str = "I built LLM pipelines.\n\nI shipped production agents.") -> MagicMock:
+        mock_proc = MagicMock()
+        mock_proc.stdout = _fake_openclaw_letter_stdout(letter_body)
+        return mock_proc
+
+    def _valid_payload(self, **overrides) -> dict:
+        base = {
+            "offer_description": "We need an AI engineer working with Claude and LLM agents.",
+            "company": "AcmeCorp",
+            "role": "AI Engineer",
+        }
+        base.update(overrides)
+        return base
+
+    def test_happy_path(self) -> None:
+        with patch("subprocess.run", return_value=self._mock_openclaw()):
+            with patch("pathlib.Path.mkdir"), patch("pathlib.Path.write_text"):
+                r = self.client.post("/cover-letter", json=self._valid_payload())
+        assert r.status_code == 200
+        body = r.json()
+        assert body["ok"] is True
+        assert body["letter_markdown"] is not None
+        assert body["language"] == "en"
+        assert body["word_count"] is not None
+        assert body["filename"] is not None
+
+    def test_filename_prefix_is_lm(self) -> None:
+        with patch("subprocess.run", return_value=self._mock_openclaw()):
+            with patch("pathlib.Path.mkdir"), patch("pathlib.Path.write_text"):
+                r = self.client.post("/cover-letter", json=self._valid_payload())
+        assert r.json()["filename"].startswith("LM_Patricia_Wintrebert_")
+
+    def test_filename_contains_company(self) -> None:
+        with patch("subprocess.run", return_value=self._mock_openclaw()):
+            with patch("pathlib.Path.mkdir"), patch("pathlib.Path.write_text"):
+                r = self.client.post("/cover-letter", json=self._valid_payload())
+        assert "AcmeCorp" in r.json()["filename"]
+
+    def test_word_count_matches_letter(self) -> None:
+        body_text = "I built LLM pipelines and shipped production agents to prod."
+        with patch("subprocess.run", return_value=self._mock_openclaw(body_text)):
+            with patch("pathlib.Path.mkdir"), patch("pathlib.Path.write_text"):
+                r = self.client.post("/cover-letter", json=self._valid_payload())
+        resp = r.json()
+        assert resp["word_count"] == hb.count_words(resp["letter_markdown"])
+
+    def test_language_detected_fr(self) -> None:
+        payload = self._valid_payload(
+            offer_description="Nous recherchons notre candidat pour notre poste en France."
+        )
+        with patch("subprocess.run", return_value=self._mock_openclaw()):
+            with patch("pathlib.Path.mkdir"), patch("pathlib.Path.write_text"):
+                r = self.client.post("/cover-letter", json=payload)
+        assert r.json()["language"] == "fr"
+
+    def test_language_override_wins(self) -> None:
+        payload = self._valid_payload(
+            offer_description="Nous recherchons notre candidat pour notre poste.",
+            language="de",
+        )
+        with patch("subprocess.run", return_value=self._mock_openclaw()):
+            with patch("pathlib.Path.mkdir"), patch("pathlib.Path.write_text"):
+                r = self.client.post("/cover-letter", json=payload)
+        assert r.json()["language"] == "de"
+
+    def test_language_defaults_en(self) -> None:
+        payload = self._valid_payload(offer_description="Senior engineer position.")
+        with patch("subprocess.run", return_value=self._mock_openclaw()):
+            with patch("pathlib.Path.mkdir"), patch("pathlib.Path.write_text"):
+                r = self.client.post("/cover-letter", json=payload)
+        assert r.json()["language"] == "en"
+
+    def test_missing_offer_description_422(self) -> None:
+        r = self.client.post("/cover-letter", json={"company": "X", "role": "Dev"})
+        assert r.status_code == 422
+
+    def test_missing_company_422(self) -> None:
+        r = self.client.post("/cover-letter", json={"offer_description": "...", "role": "Dev"})
+        assert r.status_code == 422
+
+    def test_missing_role_422(self) -> None:
+        r = self.client.post("/cover-letter", json={"offer_description": "...", "company": "X"})
+        assert r.status_code == 422
+
+    def test_rate_limit_429(self) -> None:
+        with patch("subprocess.run", return_value=self._mock_openclaw()):
+            with patch("pathlib.Path.mkdir"), patch("pathlib.Path.write_text"):
+                for _ in range(5):
+                    self.client.post("/cover-letter", json=self._valid_payload())
+        r = self.client.post("/cover-letter", json=self._valid_payload())
+        assert r.status_code == 429
+
+    def test_rate_limiter_independent_from_cv(self) -> None:
+        with patch("subprocess.run", return_value=self._mock_openclaw()):
+            with patch("pathlib.Path.mkdir"), patch("pathlib.Path.write_text"):
+                for _ in range(5):
+                    self.client.post("/cover-letter", json=self._valid_payload())
+        mock_cv = MagicMock()
+        mock_cv.stdout = _fake_openclaw_stdout()
+        with patch("subprocess.run", return_value=mock_cv):
+            with patch("pathlib.Path.mkdir"), patch("pathlib.Path.write_text"):
+                r = self.client.post(
+                    "/rewrite-cv",
+                    json={"offer_description": "AI engineer", "company": "X", "matched_keywords": []},
+                )
+        assert r.status_code == 200
+
+    def test_missing_markers_returns_error(self) -> None:
+        mock_proc = MagicMock()
+        mock_proc.stdout = json.dumps({"result": {"finalAssistantVisibleText": "raw text no markers"}})
+        with patch("subprocess.run", return_value=mock_proc):
+            r = self.client.post("/cover-letter", json=self._valid_payload())
+        body = r.json()
+        assert body["ok"] is False
+        assert "LETTER_START" in body["error"]
+
+    def test_timeout_returns_error(self) -> None:
+        with patch("subprocess.run", side_effect=subprocess.TimeoutExpired("openclaw", 600)):
+            r = self.client.post("/cover-letter", json=self._valid_payload())
+        body = r.json()
+        assert body["ok"] is False
+        assert "timeout" in body["error"]
+
+    def test_forbidden_phrases_flagged(self) -> None:
+        letter_body = "I am a results-driven team player responsible for cloud infra."
+        with patch("subprocess.run", return_value=self._mock_openclaw(letter_body)):
+            with patch("pathlib.Path.mkdir"), patch("pathlib.Path.write_text"):
+                r = self.client.post("/cover-letter", json=self._valid_payload())
+        body = r.json()
+        assert body["ok"] is True
+        assert body["forbidden_phrases_found"] is not None
+        assert len(body["forbidden_phrases_found"]) >= 1
+
+    def test_clean_letter_no_forbidden_field(self) -> None:
+        letter_body = "I built LLM pipelines and shipped production RAG systems at scale."
+        with patch("subprocess.run", return_value=self._mock_openclaw(letter_body)):
+            with patch("pathlib.Path.mkdir"), patch("pathlib.Path.write_text"):
+                r = self.client.post("/cover-letter", json=self._valid_payload())
+        body = r.json()
+        assert body["ok"] is True
+        assert body["forbidden_phrases_found"] is None
+
+    def test_optional_cv_summary_accepted(self) -> None:
+        payload = self._valid_payload(cv_summary="Senior AI engineer, 8 years experience.")
+        with patch("subprocess.run", return_value=self._mock_openclaw()):
+            with patch("pathlib.Path.mkdir"), patch("pathlib.Path.write_text"):
+                r = self.client.post("/cover-letter", json=payload)
+        assert r.status_code == 200
+        assert r.json()["ok"] is True
+
+    def test_optional_matched_keywords_empty_list(self) -> None:
+        payload = self._valid_payload(matched_keywords=[])
+        with patch("subprocess.run", return_value=self._mock_openclaw()):
+            with patch("pathlib.Path.mkdir"), patch("pathlib.Path.write_text"):
+                r = self.client.post("/cover-letter", json=payload)
+        assert r.status_code == 200
+
+    def test_optional_profile_tag_absent(self) -> None:
+        with patch("subprocess.run", return_value=self._mock_openclaw()):
+            with patch("pathlib.Path.mkdir"), patch("pathlib.Path.write_text"):
+                r = self.client.post("/cover-letter", json=self._valid_payload())
+        assert r.status_code == 200
+
+
 if __name__ == "__main__":
     unittest.main()

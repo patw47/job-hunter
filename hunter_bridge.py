@@ -1,10 +1,11 @@
 #!/usr/bin/env python3
 """
-Hunter Bridge — FastAPI server for CV generation.
+Hunter Bridge — FastAPI server for CV generation and cover letters.
 
 Routes:
-  GET  /health      -- healthcheck
-  POST /rewrite-cv  -- cv-rewriter skill (Sonnet), rate-limited to 5/hour
+  GET  /health         -- healthcheck
+  POST /rewrite-cv     -- cv-rewriter skill (Sonnet), rate-limited to 5/hour
+  POST /cover-letter   -- cover-letter-writer skill (Sonnet), rate-limited to 5/hour
 """
 from __future__ import annotations
 
@@ -36,8 +37,12 @@ WORKSPACE_DIR: Final[Path] = Path(
 CV_OUTPUT_DIR: Final[Path] = Path(
     os.environ.get("CV_OUTPUT_DIR", "/home/thehunter/generated/cv")
 )
+LM_OUTPUT_DIR: Final[Path] = Path(
+    os.environ.get("LM_OUTPUT_DIR", "/home/thehunter/generated/cover-letters")
+)
 AGENT_ID: Final[str] = "the-hunter"
 SKILL_NAME: Final[str] = "cv-rewriter"
+COVER_LETTER_SKILL_NAME: Final[str] = "cover-letter-writer"
 OPENCLAW_TIMEOUT: Final[int] = 600
 
 RATE_LIMIT_MAX: Final[int] = 5
@@ -153,11 +158,14 @@ class _RateLimiter:
 
 
 _cv_rate_limiter = _RateLimiter(RATE_LIMIT_MAX, RATE_LIMIT_WINDOW)
+_cl_rate_limiter = _RateLimiter(RATE_LIMIT_MAX, RATE_LIMIT_WINDOW)
 
 # ── CV parsing ────────────────────────────────────────────────────────────────
 
 _CV_START: Final[str] = "[CV_START]"
 _CV_END: Final[str] = "[CV_END]"
+_LETTER_START: Final[str] = "[LETTER_START]"
+_LETTER_END: Final[str] = "[LETTER_END]"
 
 
 def parse_cv_wrapper(raw: str) -> str:
@@ -169,6 +177,17 @@ def parse_cv_wrapper(raw: str) -> str:
     if end_idx == -1:
         raise ValueError(f"Missing {_CV_END} marker in OpenClaw response")
     return raw[start_idx + len(_CV_START):end_idx].strip()
+
+
+def parse_letter_wrapper(raw: str) -> str:
+    """Extract letter markdown from [LETTER_START]...[LETTER_END] markers."""
+    start_idx = raw.find(_LETTER_START)
+    if start_idx == -1:
+        raise ValueError(f"Missing {_LETTER_START} marker in OpenClaw response")
+    end_idx = raw.find(_LETTER_END, start_idx)
+    if end_idx == -1:
+        raise ValueError(f"Missing {_LETTER_END} marker in OpenClaw response")
+    return raw[start_idx + len(_LETTER_START):end_idx].strip()
 
 
 # ── Filename generation ───────────────────────────────────────────────────────
@@ -183,6 +202,23 @@ def generate_cv_filename(company: str, today: str | None = None) -> str:
     clean = _UNSAFE_CHARS.sub("_", company)
     clean = re.sub(r"_+", "_", clean).strip("_")
     return f"CV_Patricia_Wintrebert_{clean}_{today}.md"
+
+
+def generate_letter_filename(company: str, today: str | None = None) -> str:
+    """Return LM_Patricia_Wintrebert_{Company}_{YYYY-MM-DD}.md"""
+    if today is None:
+        today = date.today().isoformat()
+    clean = _UNSAFE_CHARS.sub("_", company)
+    clean = re.sub(r"_+", "_", clean).strip("_")
+    return f"LM_Patricia_Wintrebert_{clean}_{today}.md"
+
+
+# ── Word count ────────────────────────────────────────────────────────────────
+
+
+def count_words(text: str) -> int:
+    """Count whitespace-separated tokens in text."""
+    return len(text.split())
 
 
 # ── Forbidden phrases validation ──────────────────────────────────────────────
@@ -245,6 +281,36 @@ def call_cv_rewriter(brief: dict) -> str:
     return _extract_inner(result.stdout.strip())
 
 
+def call_cover_letter_writer(brief: dict) -> str:
+    """Dispatch cover-letter-writer skill via openclaw agent CLI. Returns raw output text."""
+    session_id = f"bridge-cl-{int(time.time())}"
+    message = (
+        f"[{COVER_LETTER_SKILL_NAME.upper()} SKILL]\n"
+        "Brief reçu depuis n8n :\n"
+        + json.dumps(brief, ensure_ascii=False, indent=2)
+        + f"\n\nApplique la skill {COVER_LETTER_SKILL_NAME} selon SKILL.md."
+    )
+    env = os.environ.copy()
+    env["OPENCLAW_CONFIG_PATH"] = OPENCLAW_CONFIG
+    env.setdefault("HOME", "/home/thehunter")
+    result = subprocess.run(
+        [
+            "openclaw", "agent",
+            "--agent", AGENT_ID,
+            "--session-id", session_id,
+            "--message", message,
+            "--json",
+            "--timeout", str(OPENCLAW_TIMEOUT),
+        ],
+        capture_output=True,
+        text=True,
+        timeout=OPENCLAW_TIMEOUT + 30,
+        stdin=subprocess.DEVNULL,
+        env=env,
+    )
+    return _extract_inner(result.stdout.strip())
+
+
 # ── FastAPI app ───────────────────────────────────────────────────────────────
 
 app = FastAPI(title="Hunter Bridge", version="0.1.0")
@@ -264,6 +330,26 @@ class RewriteCvResponse(BaseModel):
     cv_markdown: str | None = None
     language: str | None = None
     profile_tag: str | None = None
+    error: str | None = None
+    forbidden_phrases_found: list[str] | None = None
+
+
+class CoverLetterRequest(BaseModel):
+    offer_description: str = Field(..., min_length=1)
+    company: str = Field(..., min_length=1)
+    role: str = Field(..., min_length=1)
+    language: str | None = None
+    cv_summary: str | None = None
+    matched_keywords: list[str] = Field(default_factory=list)
+    profile_tag: str | None = None
+
+
+class CoverLetterResponse(BaseModel):
+    ok: bool
+    filename: str | None = None
+    letter_markdown: str | None = None
+    language: str | None = None
+    word_count: int | None = None
     error: str | None = None
     forbidden_phrases_found: list[str] | None = None
 
@@ -326,6 +412,68 @@ def rewrite_cv(req: RewriteCvRequest) -> RewriteCvResponse:
         cv_markdown=cv_markdown,
         language=language,
         profile_tag=profile_tag,
+        forbidden_phrases_found=forbidden if forbidden else None,
+    )
+
+
+@app.post("/cover-letter", response_model=CoverLetterResponse)
+def cover_letter(req: CoverLetterRequest) -> CoverLetterResponse:
+    """Generate cover letter via cover-letter-writer skill. Rate-limited to 5/hour."""
+    if not _cl_rate_limiter.check_and_record():
+        raise HTTPException(
+            status_code=429,
+            detail={"ok": False, "error": "rate_limit: max 5 cover letters per hour"},
+        )
+
+    language = detect_language(req.offer_description, req.language)
+    profile_tag = detect_profile_tag(
+        req.offer_description, req.matched_keywords, req.profile_tag
+    )
+    brief = {
+        "company": req.company,
+        "role": req.role,
+        "description": req.offer_description,
+        "language": language,
+        "skills_found": req.matched_keywords,
+        "profile_tag": profile_tag,
+        "cv_summary": req.cv_summary,
+    }
+    filename = generate_letter_filename(req.company)
+
+    try:
+        raw_output = call_cover_letter_writer(brief)
+    except subprocess.TimeoutExpired:
+        return CoverLetterResponse(
+            ok=False, error="timeout: OpenClaw cover-letter-writer exceeded 600s"
+        )
+    except Exception as exc:
+        return CoverLetterResponse(ok=False, error=str(exc))
+
+    try:
+        letter_markdown = parse_letter_wrapper(raw_output)
+    except ValueError as exc:
+        return CoverLetterResponse(ok=False, error=str(exc))
+
+    forbidden = validate_forbidden_phrases(letter_markdown)
+    if forbidden:
+        logger.warning("Forbidden phrases in generated cover letter: %s", forbidden)
+
+    wc = count_words(letter_markdown)
+    logger.info("Cover letter word count: %d (target 250-350)", wc)
+
+    try:
+        LM_OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
+        (LM_OUTPUT_DIR / filename).write_text(letter_markdown, encoding="utf-8")
+        logger.info("Cover letter saved: %s", LM_OUTPUT_DIR / filename)
+    except Exception as exc:
+        logger.error("Failed to save cover letter: %s", exc)
+
+    return CoverLetterResponse(
+        ok=True,
+        filename=filename,
+        letter_markdown=letter_markdown,
+        language=language,
+        word_count=wc,
         forbidden_phrases_found=forbidden if forbidden else None,
     )
 
