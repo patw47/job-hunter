@@ -28,7 +28,7 @@ SENTINEL_PREFIX: Final[str] = "__TEST_SMOKE__"
 HEADERS: Final[dict[str, list[str]]] = {
     "MATCHES": [
         "job_id", "date_scanned", "title", "company", "location", "remote",
-        "url", "source", "match_rate", "skills_found", "status",
+        "url", "source", "match_rate", "skills_found", "status", "telegram_sent",
         "cv_drive_link", "letter_drive_link", "applied_at",
     ],
     "SCANNED_HASHES": [
@@ -44,7 +44,7 @@ TEST_ROWS: Final[dict[str, list[str]]] = {
     "MATCHES": [
         SENTINEL_PREFIX, "2026-01-01", "Test Job", "Test Corp", "Remote", "yes",
         "https://example.com/job/1", "indeed", "75.0", "python,llm",
-        "new", "", "", "",
+        "new", "FALSE", "", "", "",
     ],
     "SCANNED_HASHES": [
         SENTINEL_PREFIX, "2026-01-01", "https://example.com/job/1",
