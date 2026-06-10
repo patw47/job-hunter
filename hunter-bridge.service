@@ -1,0 +1,26 @@
+[Unit]
+Description=Hunter Bridge — FastAPI CV generation server (job-hunter)
+After=network.target openclaw-thehunter.service
+Wants=openclaw-thehunter.service
+
+[Service]
+Type=simple
+User=thehunter
+Group=apps
+WorkingDirectory=/opt/apps/job-hunter
+EnvironmentFile=/opt/apps/job-hunter/.env
+Environment=HOME=/home/thehunter
+Environment=PATH=/home/thehunter/.npm-global/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin
+Environment=HUNTER_BRIDGE_PORT=18799
+Environment=OPENCLAW_CONFIG_PATH=/home/thehunter/.openclaw/openclaw.json
+Environment=OPENCLAW_WORKSPACE=/home/thehunter/.openclaw/workspace
+Environment=CV_OUTPUT_DIR=/home/thehunter/generated/cv
+ExecStart=/home/thehunter/venv/bin/python3 /opt/apps/job-hunter/hunter_bridge.py
+Restart=always
+RestartSec=5
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=hunter-bridge
+
+[Install]
+WantedBy=multi-user.target

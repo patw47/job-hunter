@@ -43,20 +43,23 @@ Lire avant de répondre :
 
 ## Output Format
 
-```json
+Entourer le JSON des markers obligatoires :
+
+```
+[ANSWERS_START]
 {
   "answers": [
     {
       "id": "q1",
       "answer": "...",
-      "source": "precalibrated|generated"
+      "source": "generated"
     }
   ]
 }
+[ANSWERS_END]
 ```
 
-`source: "precalibrated"` si la réponse vient directement de USER.md sans LLM.
-`source: "generated"` si générée par Haiku.
+`source` vaut toujours `"generated"` (le bridge Hunter pose lui-même `"precalibrated"` pour les réponses USER.md).
 
 ## Rules
 

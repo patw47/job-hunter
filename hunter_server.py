@@ -15,8 +15,11 @@ Routes:
 Tourne en tant qu'utilisateur `thehunter`.
 """
 from http.server import HTTPServer, BaseHTTPRequestHandler
+import logging
 import subprocess, json, os, time
 from datetime import datetime
+
+logger = logging.getLogger(__name__)
 
 PORT = int(os.environ.get("HUNTER_BRIDGE_PORT", "18798"))
 OPENCLAW_CONFIG = os.environ.get(
@@ -71,6 +74,16 @@ def _today_ddmmyyyy() -> str:
     return datetime.now().strftime("%d.%m.%Y")
 
 
+def _handle_prioritize(body: dict) -> dict:
+    """Run prioritizer: merge PENDING_MATCHES + new_matches, notify top 25, park overflow."""
+    from prioritizer import open_sheets, run_prioritizer
+
+    new_matches: list[dict] = body.get("new_matches", [])
+    pending_sheet, matches_sheet = open_sheets()
+    result = run_prioritizer(pending_sheet, matches_sheet, new_matches)
+    return {"ok": True, **result}
+
+
 def _handle_dedup(body: dict) -> dict:
     """Deduplicate offers against SCANNED_HASHES and write all new hashes in batch."""
     from deduplication import compute_hash, log_hashes, open_scanned_hashes
@@ -116,6 +129,144 @@ def _handle_dedup(body: dict) -> dict:
     }
 
 
+def _handle_callback(body: dict) -> dict:
+    """Route a Telegram callback_query by action prefix and update MATCHES."""
+    from telegram_notifier import (
+        answer_callback_query,
+        edit_message_text,
+        send_match_card,
+    )
+    from matches_sheet import (
+        COL_COMPANY,
+        COL_LOCATION,
+        COL_MATCH_RATE,
+        COL_REMOTE,
+        COL_SKILLS_FOUND,
+        COL_TITLE,
+        COL_URL,
+        STATUS_IGNORED,
+        STATUS_SENT,
+        find_row_by_url_hash,
+        increment_snooze,
+        open_matches_sheet,
+        set_status,
+    )
+
+    callback_query_id: str = body.get("callback_query_id", "")
+    callback_data: str = body.get("callback_data", "")
+    chat_id: str = str(body.get("chat_id", ""))
+    message_id: int | None = body.get("message_id")
+    bot_token: str = os.environ.get("TELEGRAM_HUNTER_BOT_TOKEN", "")
+
+    if not bot_token:
+        return {"ok": False, "error": "TELEGRAM_HUNTER_BOT_TOKEN not set"}
+
+    if ":" not in callback_data:
+        return {"ok": False, "error": f"invalid callback_data: {callback_data!r}"}
+
+    action, url_hash = callback_data.split(":", 1)
+
+    answer_text = ""
+    edit_text: str | None = None
+    result: dict = {"ok": True, "action": action, "url_hash": url_hash}
+
+    try:
+        sheet = open_matches_sheet()
+        _, row = find_row_by_url_hash(url_hash, sheet)
+
+        def _cell(col: int) -> str:
+            return row[col - 1] if row and len(row) >= col else "?"
+
+        company = _cell(COL_COMPANY)
+
+        if action == "ignore":
+            set_status(url_hash, STATUS_IGNORED, sheet)
+            answer_text = "❌ Ignoré"
+            edit_text = f"❌ Ignoré : {company}"
+
+        elif action == "snooze":
+            auto_ignored, count = increment_snooze(url_hash, sheet)
+            if auto_ignored:
+                answer_text = "❌ 2 snoozes — offre ignorée"
+                edit_text = f"❌ Ignoré (2 snoozes) : {company}"
+            else:
+                answer_text = f"⏰ Snoozé ({count}/2)"
+                edit_text = f"⏰ Snoozé ({count}/2) : {company}"
+
+        elif action == "generate":
+            logger.info("GENERATE signal for hash=%s (Epic 5 queue)", url_hash)
+            answer_text = "🚀 Génération lancée"
+            edit_text = f"🚀 Génération CV+Lettre lancée : {company}"
+
+        elif action == "apply":
+            logger.info("APPLY signal for hash=%s (Epic 6 queue)", url_hash)
+            answer_text = "📝 Easy Apply lancé"
+            edit_text = f"📝 Easy Apply lancé : {company}"
+
+        elif action == "skip":
+            answer_text = "⏭️ Postule manuellement"
+            edit_text = f"⏭️ Postule manuellement : {company}"
+
+        elif action == "sent":
+            set_status(url_hash, STATUS_SENT, sheet)
+            answer_text = "📬 Marqué envoyé"
+            edit_text = f"📬 Envoyé : {company}"
+
+        elif action == "detail":
+            if row:
+                offer = {
+                    "url": _cell(COL_URL),
+                    "title": _cell(COL_TITLE),
+                    "company": _cell(COL_COMPANY),
+                    "pays": _cell(COL_LOCATION),
+                    "remote_type": _cell(COL_REMOTE),
+                    "match_rate": _cell(COL_MATCH_RATE),
+                    "keywords_matched": _cell(COL_SKILLS_FOUND),
+                    "keywords_missing": [],
+                }
+                send_match_card(offer, bot_token, chat_id)
+
+        else:
+            logger.warning("Unknown callback action=%r hash=%s", action, url_hash)
+            answer_text = "?"
+
+    except Exception as exc:
+        logger.error("Callback routing failed: %s", exc)
+        result = {"ok": False, "error": str(exc)}
+
+    finally:
+        if callback_query_id:
+            try:
+                answer_callback_query(bot_token, callback_query_id, answer_text)
+            except Exception as exc:
+                logger.error("answerCallbackQuery failed: %s", exc)
+
+    if edit_text and message_id:
+        try:
+            edit_message_text(bot_token, chat_id, message_id, edit_text)
+        except Exception as exc:
+            logger.warning("editMessageText failed: %s", exc)
+
+    return result
+
+
+def _handle_snooze_renotify() -> dict:
+    """Re-send snoozed MATCHES offers as individual Telegram cards."""
+    from telegram_notifier import send_snooze_renotifications
+
+    bot_token = os.environ.get("TELEGRAM_HUNTER_BOT_TOKEN", "")
+    chat_id = os.environ.get("TELEGRAM_HUNTER_CHAT_ID", "")
+
+    if not bot_token or not chat_id:
+        return {
+            "ok": False,
+            "error": "TELEGRAM_HUNTER_BOT_TOKEN or TELEGRAM_HUNTER_CHAT_ID not set",
+        }
+
+    sent = send_snooze_renotifications(bot_token, chat_id)
+    return {"ok": True, "sent": sent}
+
+
 def build_message(skill, brief):
     return (
         f"[{skill.upper()} SKILL]\n"
@@ -141,6 +292,26 @@ class Handler(BaseHTTPRequestHandler):
             self._send(404, {"error": "not found"})
 
     def do_POST(self):
+        if self.path == "/callback":
+            length = int(self.headers.get("Content-Length", 0))
+            raw = self.rfile.read(length).decode("utf-8") if length else ""
+            try:
+                body = json.loads(raw) if raw else {}
+            except Exception:
+                body = {}
+            try:
+                self._send(200, _handle_callback(body))
+            except Exception as e:
+                self._send(200, {"ok": False, "error": str(e)})
+            return
+
+        if self.path == "/snooze-renotify":
+            try:
+                self._send(200, _handle_snooze_renotify())
+            except Exception as e:
+                self._send(200, {"ok": False, "error": str(e)})
+            return
+
         if self.path == "/dedup":
             length = int(self.headers.get("Content-Length", 0))
             raw = self.rfile.read(length).decode("utf-8") if length else ""
