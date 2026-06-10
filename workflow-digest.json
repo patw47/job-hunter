@@ -38,6 +38,21 @@
       "parameters": {
         "jsCode": "const exitCode = $input.first().json.exitCode ?? 0;\nconst stdout = ($input.first().json.stdout ?? '').trim();\nconst stderr = ($input.first().json.stderr ?? '').trim();\n\nif (exitCode !== 0) {\n  throw new Error(`telegram_notifier --digest exit ${exitCode}: ${stderr.slice(-300)}`);\n}\n\nconst skipped = stdout.includes('skipped') || stdout === '';\nreturn [{ json: { ok: true, skipped, stdout, stderr } }];"
       }
+    },
+    {
+      "id": "snooze-renotify",
+      "name": "Snooze Renotify",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.1,
+      "position": [660, 0],
+      "parameters": {
+        "method": "POST",
+        "url": "http://127.0.0.1:18798/snooze-renotify",
+        "sendBody": false,
+        "options": {
+          "timeout": 60000
+        }
+      }
     }
   ],
   "connections": {
@@ -57,6 +72,17 @@
         [
           {
             "node": "Parse Digest Output",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Parse Digest Output": {
+      "main": [
+        [
+          {
+            "node": "Snooze Renotify",
             "type": "main",
             "index": 0
           }
