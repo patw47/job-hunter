@@ -78,13 +78,25 @@ Seuil minimum : 60%. Notification immédiate : ≥ 80%.
 |-------------|-------------------|
 | Vector DB | Qdrant, Pinecone, pgvector, Weaviate, Chroma, Milvus |
 | GenAI | LLM, Large Language Model, Foundation Model, Generative AI |
+| Gen AI | GenAI, Generative AI, Generative Artificial Intelligence |
+| Generative AI | GenAI, Gen AI, LLM, Foundation Model |
 | Agentic AI | Agent, AI Agent, Multi-agent, Autonomous AI, AgentOS |
 | Workflow automation | n8n, Make, Zapier, Airflow, Prefect |
 | MLOps | Model deployment, ML pipeline, Model serving, ModelOps |
-| RAG | Retrieval Augmented Generation, Semantic search |
+| RAG | Retrieval Augmented Generation, Semantic search, Vector search |
 | Full stack | Frontend + Backend, React + FastAPI, Next.js + Python |
 | AI Engineer | AI Developer, ML Engineer, Applied AI, AI Builder |
 | MCP | Model Context Protocol, Tool use, Function calling |
+| LLM Engineer | Language Model Engineer, NLP Engineer, AI Engineer |
+| Machine Learning | ML, Deep Learning, Statistical Learning |
+| NLP | Natural Language Processing, Text Analysis, Text Processing, Language Processing |
+| CI/CD | Continuous Integration, Continuous Deployment, GitHub Actions, GitLab CI |
+| Docker | Containerization, Container, Docker Compose, OCI container |
+| Kubernetes | k8s, Container orchestration, k8s cluster |
+| Fine-tuning | Fine tuning, Finetuning, LoRA, RLHF, Instruction tuning, SFT |
+| Embeddings | Embedding, Vector embeddings, Text embeddings, Dense embeddings |
+| GCP | Google Cloud, Google Cloud Platform, Cloud GCP |
+| API | REST API, GraphQL, Web API, HTTP API, API integration |
 
 ---
 
