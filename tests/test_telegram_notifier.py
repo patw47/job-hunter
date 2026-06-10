@@ -16,6 +16,7 @@ from telegram_notifier import (
     _escape_html,
     _flag_emoji,
     _url_hash,
+    send_digest,
     send_match_card,
 )
 
@@ -257,6 +258,178 @@ class TestSendMatchCard(unittest.TestCase):
 
 
 import json  # noqa: E402  (needed by tests above)
+
+
+# ── send_digest ───────────────────────────────────────────────────────────────
+
+
+def _digest_offer(match_rate: int | float, url_suffix: str = "") -> dict:
+    return {
+        "url": f"https://example.com/job/{url_suffix or match_rate}",
+        "title": f"Job {match_rate}",
+        "company": "Corp",
+        "pays": "FR",
+        "remote_type": "Remote",
+        "match_rate": match_rate,
+        "keywords_matched": ["Python"],
+        "keywords_missing": [],
+    }
+
+
+def _ok_response() -> bytes:
+    return json.dumps({"ok": True, "result": {"message_id": 1}}).encode("utf-8")
+
+
+def _mock_urlopen(resp_bytes: bytes) -> MagicMock:
+    mock_resp = MagicMock()
+    mock_resp.read.return_value = resp_bytes
+    mock_resp.__enter__ = lambda s: s
+    mock_resp.__exit__ = MagicMock(return_value=False)
+    return mock_resp
+
+
+class TestSendDigest(unittest.TestCase):
+    def test_empty_list_no_http_call(self) -> None:
+        with patch("urllib.request.urlopen") as mock_open:
+            result = send_digest([], "tok", "cid")
+        assert result is None
+        mock_open.assert_not_called()
+
+    def test_all_above_80_no_http_call(self) -> None:
+        offers = [_digest_offer(80), _digest_offer(92)]
+        with patch("urllib.request.urlopen") as mock_open:
+            result = send_digest(offers, "tok", "cid")
+        assert result is None
+        mock_open.assert_not_called()
+
+    def test_ge80_offers_absent_from_digest(self) -> None:
+        offers = [_digest_offer(85, "a"), _digest_offer(75, "b")]
+        captured: dict = {}
+
+        def capture(req, timeout=None):
+            captured["body"] = json.loads(req.data.decode("utf-8"))
+            return _mock_urlopen(_ok_response())
+
+        with patch("urllib.request.urlopen", side_effect=capture):
+            send_digest(offers, "tok", "cid")
+
+        text = captured["body"]["text"]
+        assert "Job 85" not in text
+        assert "Job 75" in text
+
+    def test_offers_sorted_descending(self) -> None:
+        offers = [_digest_offer(62, "a"), _digest_offer(78, "b"), _digest_offer(71, "c")]
+        captured: dict = {}
+
+        def capture(req, timeout=None):
+            captured["body"] = json.loads(req.data.decode("utf-8"))
+            return _mock_urlopen(_ok_response())
+
+        with patch("urllib.request.urlopen", side_effect=capture):
+            send_digest(offers, "tok", "cid")
+
+        text = captured["body"]["text"]
+        pos_78 = text.index("78%")
+        pos_71 = text.index("71%")
+        pos_62 = text.index("62%")
+        assert pos_78 < pos_71 < pos_62
+
+    def test_header_format(self) -> None:
+        offers = [_digest_offer(75, "a"), _digest_offer(68, "b")]
+        captured: dict = {}
+
+        def capture(req, timeout=None):
+            captured["body"] = json.loads(req.data.decode("utf-8"))
+            return _mock_urlopen(_ok_response())
+
+        with patch("urllib.request.urlopen", side_effect=capture):
+            send_digest(offers, "tok", "cid")
+
+        text = captured["body"]["text"]
+        assert "🎯 THE HUNTER" in text
+        assert "2 offres aujourd'hui" in text
+
+    def test_numbered_list_and_inline_buttons(self) -> None:
+        offers = [_digest_offer(75, "a"), _digest_offer(68, "b")]
+        captured: dict = {}
+
+        def capture(req, timeout=None):
+            captured["body"] = json.loads(req.data.decode("utf-8"))
+            return _mock_urlopen(_ok_response())
+
+        with patch("urllib.request.urlopen", side_effect=capture):
+            send_digest(offers, "tok", "cid")
+
+        text = captured["body"]["text"]
+        assert "1." in text
+        assert "2." in text
+
+        kb = captured["body"]["reply_markup"]["inline_keyboard"]
+        assert len(kb) == 2
+        all_callbacks = [row[0]["callback_data"] for row in kb]
+        for cb in all_callbacks:
+            assert cb.startswith("detail:")
+            assert len(cb.split(":")[1]) == 16
+
+    def test_callback_data_uses_url_hash(self) -> None:
+        offer = _digest_offer(70, "xyz")
+        captured: dict = {}
+
+        def capture(req, timeout=None):
+            captured["body"] = json.loads(req.data.decode("utf-8"))
+            return _mock_urlopen(_ok_response())
+
+        with patch("urllib.request.urlopen", side_effect=capture):
+            send_digest([offer], "tok", "cid")
+
+        expected_hash = _url_hash(offer["url"])
+        kb = captured["body"]["reply_markup"]["inline_keyboard"]
+        assert kb[0][0]["callback_data"] == f"detail:{expected_hash}"
+
+    def test_callback_data_fits_telegram_limit(self) -> None:
+        offer = _digest_offer(70, "some-very-long-job-url-slug-to-test-limit")
+        captured: dict = {}
+
+        def capture(req, timeout=None):
+            captured["body"] = json.loads(req.data.decode("utf-8"))
+            return _mock_urlopen(_ok_response())
+
+        with patch("urllib.request.urlopen", side_effect=capture):
+            send_digest([offer], "tok", "cid")
+
+        kb = captured["body"]["reply_markup"]["inline_keyboard"]
+        for row in kb:
+            for btn in row:
+                if "callback_data" in btn:
+                    assert len(btn["callback_data"].encode("utf-8")) <= 64
+
+    def test_float_match_rate_normalized(self) -> None:
+        offers = [_digest_offer(0.75), _digest_offer(0.82)]
+        captured: dict = {}
+
+        def capture(req, timeout=None):
+            captured["body"] = json.loads(req.data.decode("utf-8"))
+            return _mock_urlopen(_ok_response())
+
+        with patch("urllib.request.urlopen", side_effect=capture):
+            send_digest(offers, "tok", "cid")
+
+        text = captured["body"]["text"]
+        assert "75%" in text
+        assert "82%" not in text
+
+    def test_exactly_one_http_call(self) -> None:
+        offers = [_digest_offer(65, "a"), _digest_offer(72, "b")]
+        with patch("urllib.request.urlopen", return_value=_mock_urlopen(_ok_response())) as mock_open:
+            send_digest(offers, "tok", "cid")
+        assert mock_open.call_count == 1
+
+    def test_raises_on_telegram_error(self) -> None:
+        error_body = json.dumps({"ok": False, "description": "Forbidden"}).encode()
+        with patch("urllib.request.urlopen", return_value=_mock_urlopen(error_body)):
+            with self.assertRaises(RuntimeError, msg="Forbidden"):
+                send_digest([_digest_offer(70)], "tok", "cid")
+
 
 if __name__ == "__main__":
     unittest.main()
