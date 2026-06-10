@@ -130,6 +130,10 @@ install -m 750 -o $APP_USER -g $APP_GROUP \
     "$SCRIPT_DIR/linkedin_scraper.py" "$APP_DIR/linkedin_scraper.py"
 echo "  ✓ linkedin_scraper.py"
 
+install -m 640 -o $APP_USER -g $APP_GROUP \
+    "$SCRIPT_DIR/layer1_filter.py" "$APP_DIR/layer1_filter.py"
+echo "  ✓ layer1_filter.py"
+
 # Sessions directory for LinkedIn cookie rotation (one file per day)
 install -d -m 700 -o $APP_USER -g $APP_GROUP "$APP_DIR/sessions"
 echo "  ✓ sessions/ directory"
