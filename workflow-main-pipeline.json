@@ -32,7 +32,7 @@
         0
       ],
       "parameters": {
-        "command": "/home/thehunter/venv/bin/python3 /opt/apps/job-hunter/csv_parser.py --folder-id {{ $env.GOOGLE_DRIVE_FOLDER_ID ?? '' }} --creds {{ $env.GOOGLE_CREDS_PATH ?? '/opt/apps/job-hunter/credentials.json' }}"
+        "command": "=/home/thehunter/venv/bin/python3 /opt/apps/job-hunter/csv_parser.py --folder-id {{ $env.GOOGLE_DRIVE_FOLDER_ID ?? '' }} --creds {{ $env.GOOGLE_CREDS_PATH ?? '/opt/apps/job-hunter/credentials.json' }}"
       }
     },
     {
@@ -206,7 +206,7 @@
         0
       ],
       "parameters": {
-        "command": "echo '{{ $json.payload_b64 }}' | base64 --decode | /home/thehunter/venv/bin/python3 /opt/apps/job-hunter/pipeline_writer.py"
+        "command": "=echo '{{ $json.payload_b64 }}' | base64 --decode | /home/thehunter/venv/bin/python3 /opt/apps/job-hunter/pipeline_writer.py"
       }
     },
     {
@@ -233,7 +233,7 @@
         0
       ],
       "parameters": {
-        "command": "echo '{{ $json.payload_b64 }}' | base64 --decode | TELEGRAM_HUNTER_BOT_TOKEN=\"{{ $env.TELEGRAM_HUNTER_BOT_TOKEN ?? '' }}\" TELEGRAM_HUNTER_CHAT_ID=\"{{ $env.TELEGRAM_HUNTER_CHAT_ID ?? '' }}\" HUNTER_BRIDGE_URL=\"http://127.0.0.1:{{ $env.HUNTER_BRIDGE_PORT ?? 18798 }}\" /home/thehunter/venv/bin/python3 /opt/apps/job-hunter/notification_sender.py"
+        "command": "=echo '{{ $json.payload_b64 }}' | base64 --decode | TELEGRAM_HUNTER_BOT_TOKEN=\"{{ $env.TELEGRAM_HUNTER_BOT_TOKEN ?? '' }}\" TELEGRAM_HUNTER_CHAT_ID=\"{{ $env.TELEGRAM_HUNTER_CHAT_ID ?? '' }}\" HUNTER_BRIDGE_URL=\"http://127.0.0.1:{{ $env.HUNTER_BRIDGE_PORT ?? 18798 }}\" /home/thehunter/venv/bin/python3 /opt/apps/job-hunter/notification_sender.py"
       }
     }
   ],

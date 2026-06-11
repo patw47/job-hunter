@@ -7,7 +7,10 @@
       "name": "Schedule Trigger",
       "type": "n8n-nodes-base.scheduleTrigger",
       "typeVersion": 1.1,
-      "position": [0, 0],
+      "position": [
+        0,
+        0
+      ],
       "parameters": {
         "rule": {
           "interval": [
@@ -24,9 +27,12 @@
       "name": "Send Digest",
       "type": "n8n-nodes-base.executeCommand",
       "typeVersion": 1,
-      "position": [220, 0],
+      "position": [
+        220,
+        0
+      ],
       "parameters": {
-        "command": "TELEGRAM_BOT_TOKEN={{ $env.TELEGRAM_HUNTER_BOT_TOKEN }} TELEGRAM_CHAT_ID={{ $env.TELEGRAM_HUNTER_CHAT_ID }} SCORED_OFFERS_FILE=/opt/apps/job-hunter/workspace/today_scored.json /home/thehunter/venv/bin/python3 /opt/apps/job-hunter/telegram_notifier.py --digest"
+        "command": "=TELEGRAM_BOT_TOKEN={{ $env.TELEGRAM_HUNTER_BOT_TOKEN }} TELEGRAM_CHAT_ID={{ $env.TELEGRAM_HUNTER_CHAT_ID }} SCORED_OFFERS_FILE=/opt/apps/job-hunter/workspace/today_scored.json /home/thehunter/venv/bin/python3 /opt/apps/job-hunter/telegram_notifier.py --digest"
       }
     },
     {
@@ -34,7 +40,10 @@
       "name": "Parse Digest Output",
       "type": "n8n-nodes-base.code",
       "typeVersion": 2,
-      "position": [440, 0],
+      "position": [
+        440,
+        0
+      ],
       "parameters": {
         "jsCode": "const exitCode = $input.first().json.exitCode ?? 0;\nconst stdout = ($input.first().json.stdout ?? '').trim();\nconst stderr = ($input.first().json.stderr ?? '').trim();\n\nif (exitCode !== 0) {\n  throw new Error(`telegram_notifier --digest exit ${exitCode}: ${stderr.slice(-300)}`);\n}\n\nconst skipped = stdout.includes('skipped') || stdout === '';\nreturn [{ json: { ok: true, skipped, stdout, stderr } }];"
       }
@@ -44,7 +53,10 @@
       "name": "Snooze Renotify",
       "type": "n8n-nodes-base.httpRequest",
       "typeVersion": 4.1,
-      "position": [660, 0],
+      "position": [
+        660,
+        0
+      ],
       "parameters": {
         "method": "POST",
         "url": "http://127.0.0.1:18798/snooze-renotify",
