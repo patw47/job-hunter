@@ -325,5 +325,24 @@ class TestMainPreflightNoCredentials(unittest.TestCase):
         assert code == 0
 
 
+class TestExtractJobId(unittest.TestCase):
+    def test_slug_url(self) -> None:
+        url = "https://www.linkedin.com/jobs/view/machine-learning-engineer-4309123456"
+        assert ls.extract_job_id(url) == "4309123456"
+
+    def test_url_with_query_params(self) -> None:
+        url = "https://www.linkedin.com/jobs/view/ai-engineer-1234567890?position=1&trk=guest"
+        assert ls.extract_job_id(url) == "1234567890"
+
+    def test_bare_numeric_url(self) -> None:
+        assert ls.extract_job_id("https://www.linkedin.com/jobs/view/9876543210/") == "9876543210"
+
+    def test_no_job_id(self) -> None:
+        assert ls.extract_job_id("https://www.linkedin.com/jobs/search?keywords=AI") == ""
+
+    def test_empty_url(self) -> None:
+        assert ls.extract_job_id("") == ""
+
+
 if __name__ == "__main__":
     unittest.main()
