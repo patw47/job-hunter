@@ -70,7 +70,7 @@ def _is_indeed_complete(offer: dict) -> bool:
 
 
 def _build_indeed_card_text(offer: dict) -> str:
-    """Build Telegram Markdown card for a complete Indeed offer (no LLM call)."""
+    """Build Telegram Markdown card for a complete offer, any source (no LLM call)."""
     rate = offer.get("match_rate", 0)
     if isinstance(rate, float) and rate <= 1.0:
         rate_pct = int(rate * 100)
@@ -91,7 +91,7 @@ def _build_indeed_card_text(offer: dict) -> str:
         f"\n"
         f"*Match* : {rate_pct}% | Skills : {skills}\n"
         f"\n"
-        f"⚡ Source : Indeed"
+        f"⚡ Source : {str(offer.get('source', 'indeed')).capitalize()}"
     )
 
 

@@ -740,9 +740,22 @@ class TestS3AC2IndeedIncompleteFallback(unittest.TestCase):
             send_notifications([offer], "tok", "cid", "http://127.0.0.1:18798")
         mock_direct.assert_not_called()
 
-    def test_linkedin_high_match_calls_analyze_not_direct(self) -> None:
+    def test_linkedin_complete_sends_direct_card_without_analyze(self) -> None:
+        # Since LinkedIn offers carry match_rate + skills_found, complete data
+        # short-circuits Haiku regardless of source (Patricia: "je veux juste la carte").
         offer = _qualified_offer(99, source="linkedin")
         offer["match_rate"] = "85.0"
+        with patch("notification_sender._call_analyze", return_value="card text") as mock_analyze, \
+             patch("notification_sender.telegram_notifier.send_card_from_text", return_value=None), \
+             patch("notification_sender.telegram_notifier.send_indeed_card") as mock_direct:
+            send_notifications([offer], "tok", "cid", "http://127.0.0.1:18798")
+        mock_direct.assert_called_once()
+        mock_analyze.assert_not_called()
+
+    def test_linkedin_incomplete_falls_back_to_analyze(self) -> None:
+        offer = _qualified_offer(99, source="linkedin")
+        offer["match_rate"] = "85.0"
+        offer["skills_found"] = ""
         with patch("notification_sender._call_analyze", return_value="card text") as mock_analyze, \
              patch("notification_sender.telegram_notifier.send_card_from_text", return_value=None), \
              patch("notification_sender.telegram_notifier.send_indeed_card") as mock_direct:
