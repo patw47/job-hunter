@@ -309,10 +309,12 @@ class TestMainPreflightNoCredentials(unittest.TestCase):
         ls.LINKEDIN_PASSWORD = self._orig_pwd
         self._tmp.cleanup()
 
-    def test_returns_1_when_no_credentials_and_no_session(self) -> None:
-        # No session file + no env vars → immediate exit 1
-        code = ls.main()
-        assert code == 1
+    def test_guest_mode_runs_without_credentials(self) -> None:
+        # Guest endpoint needs no auth: no session file + no env vars → scan still runs
+        with patch.object(ls, "run_scan", return_value=[]):
+            with patch("builtins.print"):
+                code = ls.main()
+        assert code == 0
 
     def test_proceeds_when_session_exists_despite_no_credentials(self) -> None:
         cookies = [{"name": "li_at", "value": "X"}]
