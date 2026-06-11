@@ -45,16 +45,14 @@ SKILL_MAP = {
 }
 
 
-def call_hunter(message, tag, timeout=600, model=None):
+def call_hunter(message, tag, timeout=600, agent=None):
     session_id = f"n8n-{tag}-{int(time.time())}"
     env = os.environ.copy()
     env["OPENCLAW_CONFIG_PATH"] = OPENCLAW_CONFIG
     env.setdefault("HOME", "/home/thehunter")
-    cmd = ["openclaw", "agent", "--agent", AGENT_ID,
+    cmd = ["openclaw", "agent", "--agent", agent or AGENT_ID,
            "--session-id", session_id, "--message", message,
            "--json", "--timeout", str(timeout)]
-    if model:
-        cmd += ["--model", model]
     for attempt in range(2):
         try:
             r = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout + 20, env=env)
@@ -439,16 +437,19 @@ def _handle_generate(body: dict) -> dict:
         except Exception as exc:
             logger.warning("generate: could not read offer detail %s: %s", detail_path, exc)
 
-    # Epic 5: CV and letter generation must run on Sonnet — the agent's
-    # default Haiku summarizes/hallucinates the EXPERIENCE section.
-    gen_model = os.environ.get("GENERATION_MODEL", "anthropic/claude-sonnet-4-20250514")
+    # Epic 5: generation must run on Sonnet. The gateway forbids per-call
+    # model overrides, so a dedicated agent (the-hunter-writer, same
+    # workspace, Sonnet default) handles cv-rewriter and cover-letter-writer.
+    gen_agent = os.environ.get("GENERATION_AGENT", "the-hunter-writer")
     try:
         cv_text = _extract_document(
-            extract_inner(call_hunter(build_message("cv-rewriter", offer_data), "rewrite-cv", timeout=300, model=gen_model))
+            extract_inner(call_hunter(build_message("cv-rewriter", offer_data), "rewrite-cv", timeout=300, agent=gen_agent))
         )
         letter_text = _extract_document(
-            extract_inner(call_hunter(build_message("cover-letter-writer", offer_data), "cover-letter", timeout=300, model=gen_model))
+            extract_inner(call_hunter(build_message("cover-letter-writer", offer_data), "cover-letter", timeout=300, agent=gen_agent))
         )
+        if not cv_text.strip() or not letter_text.strip():
+            return {"ok": False, "error": "generation returned empty document", "job_id": job_id}
     except Exception as e:
         return {"ok": False, "error": f"generation failed: {e}", "job_id": job_id}
 
