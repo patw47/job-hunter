@@ -28,3 +28,7 @@ sessions/
 .epic.md
 .rules
 .sprint.md
+
+# Python bytecode
+__pycache__/
+*.pyc
