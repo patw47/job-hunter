@@ -65,3 +65,27 @@ Actions possibles : `ignore` · `snooze` · `generate` · `apply` · `skip` · `
 2. Le bridge met à jour MATCHES et retourne `{ok, action, url_hash, ...}`.
 3. Répondre à Patricia en UNE ligne : confirmation courte de l'action
    (ex. « ❌ Ignoré » · « ⏰ Snoozé (1/2) » · « 🚀 Génération lancée »).
+
+## Correction des documents générés (CV / lettres)
+
+Les documents générés vivent dans `/opt/apps/job-hunter/generated/<job_id>/`
+(`cv.md`, `cover_letter.md`). Le `job_id` est le hash 16 caractères visible
+dans MATCHES (colonne 1) ou dans `/opt/apps/job-hunter/offers/*.json`.
+
+Quand Patricia demande une correction (« dans la lettre Kraken, remplace X par Y ») :
+
+1. Retrouver le job_id : `grep -il "<entreprise>" /opt/apps/job-hunter/offers/*.json`
+2. Lire le document concerné, appliquer la **correction ciblée** demandée —
+   ne pas régénérer le document entier, ne pas toucher au reste.
+3. Sauvegarder le fichier au même emplacement.
+4. Renvoyer le document corrigé à Patricia via le bot cartes :
+   ```bash
+   set -a; . /opt/apps/job-hunter/.env; set +a
+   curl -s -F chat_id=$TELEGRAM_HUNTER_CHAT_ID \
+        -F document=@/opt/apps/job-hunter/generated/<job_id>/cover_letter.md \
+        -F caption="📝 Lettre corrigée — <Entreprise>" \
+        "https://api.telegram.org/bot$TELEGRAM_HUNTER_BOT_TOKEN/sendDocument"
+   ```
+5. Si la demande est une préférence de style **générale** (« n'utilise plus
+   jamais cette formule »), l'ajouter AUSSI au Feedback log de SOUL.md pour
+   que toutes les futures générations en tiennent compte.
