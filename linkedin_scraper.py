@@ -44,7 +44,10 @@ GLOBAL_CAP: int = 40
 DELAY_MIN: float = 3.0
 DELAY_MAX: float = 8.0
 
-_SEARCH_BASE: str = "https://www.linkedin.com/jobs/search/"
+# Guest jobs API: returns parseable base-card HTML without authentication.
+# The authenticated /jobs/search/ page is unusable from a datacenter IP
+# (authwall when logged out, redirect loop with a bare li_at cookie).
+_SEARCH_BASE: str = "https://www.linkedin.com/jobs-guest/jobs/api/seeMoreJobPostings/search"
 _LOGIN_URL: str = "https://www.linkedin.com/login"
 
 _CAPTCHA_MARKERS: tuple[str, ...] = (
@@ -365,15 +368,9 @@ async def run_scan() -> list[dict]:
 
         page = await ctx.new_page()
 
-        # Session: restore cookies from today's file or login fresh
-        saved_cookies = load_session()
-        if saved_cookies:
-            await ctx.add_cookies(saved_cookies)
-            logger.info("Restored %d session cookies", len(saved_cookies))
-        else:
-            await _try_login(page)
-            cookies = await ctx.cookies()
-            save_session(cookies)
+        # Guest endpoint needs no auth; injecting session cookies on it
+        # triggers redirect loops, so the scan always runs cookie-less.
+        logger.info("Guest endpoint mode — no login required")
 
         # ── Pass 1: Remote (f_WT=3) ───────────────────────────────────────────
         logger.info("=== Pass 1: Remote (f_WT=3) — %d roots ===", len(SCAN_ROOTS))
@@ -440,14 +437,6 @@ def main() -> int:
         format="%(asctime)s %(levelname)s %(name)s: %(message)s",
         stream=sys.stderr,
     )
-
-    # Pre-flight: credentials required unless a valid session exists
-    if not LINKEDIN_EMAIL or not LINKEDIN_PASSWORD:
-        if not load_session():
-            logger.error(
-                "Set LINKEDIN_EMAIL and LINKEDIN_PASSWORD, or provide a valid session file"
-            )
-            return 1
 
     try:
         offers = asyncio.run(run_scan())
