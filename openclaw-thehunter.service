@@ -12,6 +12,13 @@ EnvironmentFile=/opt/apps/job-hunter/.env
 Environment=HOME=/home/thehunter
 Environment=PATH=/home/thehunter/.npm-global/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin
 Environment=OPENCLAW_CONFIG_PATH=/home/thehunter/.openclaw/openclaw.json
+# Sandbox: read-only system, except the agent workspace and the generated
+# documents dir (TOOLS.md correction protocol writes cv.md/cover_letter.md
+# there; without it the agent sees /opt/apps as a read-only filesystem).
+ProtectSystem=strict
+PrivateTmp=yes
+ReadWritePaths=/home/thehunter/.openclaw
+ReadWritePaths=/opt/apps/job-hunter/generated
 ExecStart=/home/thehunter/.npm-global/bin/openclaw serve
 Restart=always
 RestartSec=5
