@@ -244,6 +244,20 @@ def send_match_card(offer: dict, bot_token: str, chat_id: str) -> None:
         raise RuntimeError(f"Telegram API error: {description}")
 
 
+def _send_message_resilient(bot_token: str, payload: dict) -> dict:
+    """sendMessage with plain-text fallback when Telegram rejects the markup.
+
+    LLM-generated card text can contain unbalanced Markdown entities; a 400
+    'can't parse entities' must degrade to plain text, not fail the pipeline.
+    """
+    result = _telegram_post(bot_token, "sendMessage", payload)
+    if not result.get("ok") and "parse entities" in str(result.get("description", "")):
+        logger.warning("Telegram rejected markup — resending as plain text")
+        plain = {k: v for k, v in payload.items() if k != "parse_mode"}
+        result = _telegram_post(bot_token, "sendMessage", plain)
+    return result
+
+
 def send_indeed_card(offer: dict, bot_token: str, chat_id: str) -> None:
     """Send Telegram card for a complete Indeed offer (no LLM call)."""
     url = str(offer.get("url", ""))
@@ -259,7 +273,7 @@ def send_indeed_card(offer: dict, bot_token: str, chat_id: str) -> None:
         "disable_web_page_preview": True,
     }
 
-    result = _telegram_post(bot_token, "sendMessage", payload)
+    result = _send_message_resilient(bot_token, payload)
     if result.get("ok"):
         logger.info("Telegram Indeed card sent: %s (hash=%s)", offer.get("title", "?"), h)
     else:
@@ -282,7 +296,7 @@ def send_card_from_text(text: str, offer: dict, bot_token: str, chat_id: str) ->
         "disable_web_page_preview": True,
     }
 
-    result = _telegram_post(bot_token, "sendMessage", payload)
+    result = _send_message_resilient(bot_token, payload)
     if result.get("ok"):
         logger.info("Telegram card (from text) sent: %s (hash=%s)", offer.get("title", "?"), h)
     else:
