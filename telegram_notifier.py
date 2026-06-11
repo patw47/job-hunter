@@ -157,7 +157,12 @@ def _telegram_post(token: str, method: str, payload: dict) -> dict:
     except urllib.error.HTTPError as exc:
         body = exc.read().decode("utf-8", errors="replace")
         logger.error("Telegram API HTTP %s: %s", exc.code, body[:200])
-        raise
+        # Return the API error body ({ok: false, description: ...}) so callers
+        # can react (e.g. plain-text fallback on entity parse errors).
+        try:
+            return json.loads(body)
+        except json.JSONDecodeError:
+            raise exc
 
 
 def send_digest(offers: list[dict], bot_token: str, chat_id: str) -> None:
