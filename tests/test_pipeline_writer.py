@@ -107,5 +107,88 @@ class TestScoreOfferTarget(unittest.TestCase):
         assert rate == 0.6
 
 
+class TestSkillsLoaderVpsFormat(unittest.TestCase):
+    """Le SKILLS_MASTER.md du VPS utilise '## CATEGORIE' + lignes CSV nues."""
+
+    VPS_STYLE = """# SKILLS_MASTER.md — Patricia
+> Source of truth.
+
+---
+
+## PROGRAMMING LANGUAGES
+Python, JavaScript, SQL
+
+## AI / ML / LLM
+LLM, RAG, Prompt Engineering, n8n
+
+## ALIAS TABLE
+> Offer term → profile skills
+
+| Terme offre | Skills profil |
+|---|---|
+| Vector DB / Vector Store | Qdrant, Pinecone |
+| K8s | Kubernetes |
+
+---
+
+## CV Match Rate — Strong Signals
+- **RAG** — peer-endorsed
+"""
+
+    def setUp(self) -> None:
+        self._tmp = tempfile.NamedTemporaryFile("w", suffix=".md", delete=False)
+        self._tmp.write(self.VPS_STYLE)
+        self._tmp.close()
+        self.path = Path(self._tmp.name)
+
+    def tearDown(self) -> None:
+        self.path.unlink(missing_ok=True)
+
+    def test_keywords_loaded_from_csv_lines(self) -> None:
+        from skills_loader import load_keywords
+        kw = load_keywords(self.path)
+        assert {"Python", "JavaScript", "SQL", "LLM", "RAG", "Prompt Engineering", "n8n"} <= kw
+
+    def test_prose_sections_excluded(self) -> None:
+        from skills_loader import load_keywords
+        kw = load_keywords(self.path)
+        assert not any("endorsed" in k or "Source" in k for k in kw)
+        assert "Qdrant" not in kw  # alias table is not a keyword section
+
+    def test_uppercase_alias_heading_parsed(self) -> None:
+        from skills_loader import load_aliases
+        al = load_aliases(self.path)
+        assert al["K8s"] == ["Kubernetes"]
+
+    def test_slash_variants_split(self) -> None:
+        from skills_loader import load_aliases
+        al = load_aliases(self.path)
+        assert al["Vector DB"] == ["Qdrant", "Pinecone"]
+        assert al["Vector Store"] == ["Qdrant", "Pinecone"]
+
+
+class TestScoreOfferWordBoundaries(unittest.TestCase):
+    def setUp(self) -> None:
+        import hunter_server as hs
+        self.hs = hs
+
+    def test_short_keyword_not_substring_matched(self) -> None:
+        # 'R' must not match inside 'Senior' nor 'Make' inside 'maker'
+        rate, found = self.hs._score_offer(
+            {"title": "Senior maker", "description": ""}, {"R", "Make"}, {}
+        )
+        assert found == []
+
+    def test_alias_inverted_offer_term_credits_skills(self) -> None:
+        # Offer says 'Vector DB' → profile skills Qdrant + Pinecone credited
+        rate, found = self.hs._score_offer(
+            {"title": "", "description": "experience with a Vector DB required"},
+            {"Qdrant", "Pinecone"},
+            {"Vector DB": ["Qdrant", "Pinecone"]},
+        )
+        assert found == ["Pinecone", "Qdrant"]
+        assert rate == 0.2
+
+
 if __name__ == "__main__":
     unittest.main()

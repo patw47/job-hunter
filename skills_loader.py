@@ -16,28 +16,49 @@ DEFAULT_SKILLS_MASTER_PATH: Final[Path] = Path(
 )
 
 
+# Sections whose body is prose or metadata, never keywords.
+_NON_KEYWORD_SECTIONS: Final[tuple[str, ...]] = ("usage", "alias", "cv match rate", "sources")
+
+
 def load_keywords(path: Path) -> set[str]:
-    """Parse les sections catégories de SKILLS_MASTER.md et retourne tous les tokens."""
+    """Parse les sections catégories de SKILLS_MASTER.md et retourne tous les tokens.
+
+    Accepte les deux formats rencontrés :
+    - repo : sous-sections ``### Catégorie`` avec lignes ``- kw, kw``
+    - VPS  : sections ``## CATEGORIE`` avec lignes CSV nues
+    """
     text = path.read_text(encoding="utf-8")
     keywords: set[str] = set()
-    in_category = False
+    in_section = False
+    in_code_block = False
 
     for line in text.splitlines():
         stripped = line.strip()
 
-        if stripped.startswith("### "):
-            in_category = True
+        if stripped.startswith("```"):
+            in_code_block = not in_code_block
+            continue
+        if in_code_block:
             continue
 
-        if stripped.startswith("## ") and not stripped.startswith("### "):
-            in_category = False
+        if stripped.startswith("#"):
+            title = stripped.lstrip("#").strip().lower()
+            is_heading_2plus = stripped.startswith("##")
+            in_section = is_heading_2plus and not any(
+                title.startswith(s) or s in title for s in _NON_KEYWORD_SECTIONS
+            )
             continue
 
-        if in_category and stripped.startswith("- "):
-            for token in stripped[2:].split(","):
-                token = token.strip()
-                if token:
-                    keywords.add(token)
+        if not in_section or not stripped:
+            continue
+        if stripped.startswith((">", "|", "---", "*")):
+            continue
+
+        content = stripped[2:] if stripped.startswith("- ") else stripped
+        for token in content.split(","):
+            token = token.strip()
+            if token:
+                keywords.add(token)
 
     logger.debug("Loaded %d keywords from %s", len(keywords), path)
     return keywords
@@ -52,7 +73,8 @@ def load_aliases(path: Path) -> dict[str, list[str]]:
     for line in text.splitlines():
         stripped = line.strip()
 
-        if stripped.startswith("## Alias table"):
+        # "## Alias table" (repo) ou "## ALIAS TABLE" (VPS)
+        if stripped.startswith("##") and stripped.lstrip("#").strip().lower().startswith("alias"):
             in_table = True
             continue
 
@@ -75,8 +97,13 @@ def load_aliases(path: Path) -> dict[str, list[str]]:
             continue
 
         synonyms = [s.strip() for s in synonyms_raw.split(",") if s.strip()]
-        if term and synonyms:
-            aliases[term] = synonyms
+        if not synonyms:
+            continue
+        # "Vector DB / Vector Store / Vector database" = variantes d'un même terme
+        for variant in term.split(" / "):
+            variant = variant.strip()
+            if variant:
+                aliases[variant] = synonyms
 
     logger.debug("Loaded %d alias entries from %s", len(aliases), path)
     return aliases
