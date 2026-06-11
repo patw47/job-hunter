@@ -15,3 +15,16 @@ workspace/openclaw.json
 
 # Agent sprint handoff summaries — mirrored to Obsidian vault, never committed
 .sprint-*-summary.md
+
+# Documents générés (CV/lettres) et données runtime — jamais dans le repo
+generated/
+offers/
+logs/
+sessions/
+*.bak
+
+# Liens/handoffs locaux vers le vault Obsidian — propres à la machine
+.conventions
+.epic.md
+.rules
+.sprint.md
