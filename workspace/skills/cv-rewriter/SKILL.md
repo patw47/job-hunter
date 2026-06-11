@@ -52,6 +52,17 @@ CV complet en Markdown. Structure :
 5. Projets GitHub pertinents (depuis GITHUB_REPOS.md)
 6. Formation
 
+## RÈGLE ABSOLUE — Section Expériences (violation = CV invalide)
+
+La section EXPERIENCE de `CV_BASE.md` est la **seule source autorisée**. Obligations :
+
+- Reprendre **chaque expérience** avec son **vrai nom d'entreprise**, son **vrai intitulé**, ses **vraies dates** et son **vrai lieu**, exactement comme dans CV_BASE.md, dans le même ordre.
+- Sélectionner les bullet points tagués correspondant au `profile_tag` (+ les bullets non tagués).
+- **Reformuler uniquement le texte des bullets** pour y intégrer naturellement les mots-clés de l'offre — quand c'est possible sans mentir.
+- Interdit : fusionner des expériences, en inventer, renommer une entreprise ou un poste, modifier une date, créer des intitulés génériques (« Senior Software Engineer 2009-2020 » sans entreprise = interdit).
+- Si la place manque : raccourcir les bullets des expériences les plus anciennes, mais entreprise/poste/dates restent affichés.
+- **Vérification finale obligatoire** : chaque nom d'entreprise de la section EXPERIENCE de CV_BASE.md doit apparaître tel quel dans l'output. Sinon, corriger avant de répondre.
+
 ## ATS Rules
 
 - Pas de tableaux, pas d'images, pas de colonnes.
@@ -60,6 +71,7 @@ CV complet en Markdown. Structure :
 - Sections dans l'ordre : résumé → compétences → expériences → projets → formation.
 - Titre du CV adapté au titre exact de l'offre (ex: "AI Engineer" → pas "Développeur IA").
 - Langue : identique à `language` dans l'input.
+- Aucun fait, chiffre ou résultat non présent dans les fichiers contexte.
 
 ## Output Wrapper
 

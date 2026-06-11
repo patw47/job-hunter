@@ -136,3 +136,17 @@ class TestDocumentConverter(unittest.TestCase):
                  patch.object(dc, "md_to_pdf", side_effect=fake_ok):
                 produced = dc.convert_document(md)
             assert [p.suffix for p in produced] == [".docx", ".pdf"]
+
+
+class TestSkillWrapperExtraction(unittest.TestCase):
+    def setUp(self) -> None:
+        import hunter_server as hs
+        self.fn = hs._extract_document
+
+    def test_skill_wrapper_extracted(self) -> None:
+        raw = "Je génère le CV.\n[CV_START]\n# Patricia Wintrebert\nContenu CV.\n[CV_END]\nVoilà !"
+        assert self.fn(raw) == "# Patricia Wintrebert\nContenu CV."
+
+    def test_letter_wrapper_extracted(self) -> None:
+        raw = "blabla\n[LETTER_START]\nDear team,\nBody.\n[LETTER_END]"
+        assert self.fn(raw) == "Dear team,\nBody."
