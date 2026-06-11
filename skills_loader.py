@@ -69,6 +69,7 @@ def load_aliases(path: Path) -> dict[str, list[str]]:
     text = path.read_text(encoding="utf-8")
     aliases: dict[str, list[str]] = {}
     in_table = False
+    table_started = False
 
     for line in text.splitlines():
         stripped = line.strip()
@@ -82,10 +83,13 @@ def load_aliases(path: Path) -> dict[str, list[str]]:
             continue
 
         if not stripped.startswith("|"):
-            if stripped:
+            # prose (citations, lignes vides) avant la table : on attend la 1re ligne '|' ;
+            # après la table, toute ligne non vide met fin au parsing
+            if stripped and table_started:
                 break
             continue
 
+        table_started = True
         parts = stripped.split("|")
         if len(parts) < 4:
             continue
@@ -93,7 +97,8 @@ def load_aliases(path: Path) -> dict[str, list[str]]:
         term = parts[1].strip()
         synonyms_raw = parts[2].strip()
 
-        if not term or term == "Terme offre" or term.startswith("-"):
+        # ligne d'en-tête FR ou EN ("Terme offre" / "Term in offer")
+        if not term or term.lower().startswith(("terme", "term ")) or term.startswith("-"):
             continue
 
         synonyms = [s.strip() for s in synonyms_raw.split(",") if s.strip()]
