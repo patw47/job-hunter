@@ -55,7 +55,7 @@ def send_notifications(
 ) -> dict:
     """Send Telegram notifications for qualified offers.
 
-    ≥80%: individual card (Indeed complete → direct, else POST /analyze).
+    ≥80%: individual card (complete data → direct, else POST /analyze).
     60-79%: single digest message, sorted descending.
     Returns counters dict.
     """
@@ -73,7 +73,9 @@ def send_notifications(
 
     for offer in high:
         try:
-            if offer.get("source") == "indeed" and telegram_notifier._is_indeed_complete(offer):
+            # Complete data (any source) → direct Python card, zero LLM call.
+            # Haiku /analyze is a last resort for offers missing fields.
+            if telegram_notifier._is_indeed_complete(offer):
                 telegram_notifier.send_indeed_card(offer, bot_token, chat_id)
             else:
                 card_text = _call_analyze(offer, bridge_url)
