@@ -1,0 +1,69 @@
+{
+  "id": "job-hunter-main-pipeline-001",
+  "name": "Job Hunter — Main Pipeline",
+  "nodes": [
+    {
+      "id": "schedule-trigger",
+      "name": "Schedule Trigger",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.1,
+      "position": [0, 0],
+      "parameters": {
+        "rule": {
+          "interval": [
+            {
+              "field": "cronExpression",
+              "expression": "0 13 * * *"
+            }
+          ]
+        }
+      }
+    },
+    {
+      "id": "read-indeed-csv",
+      "name": "Read: Indeed CSV",
+      "type": "n8n-nodes-base.executeCommand",
+      "typeVersion": 1,
+      "position": [240, 0],
+      "parameters": {
+        "command": "/home/thehunter/venv/bin/python3 /opt/apps/job-hunter/csv_parser.py --folder-id {{ $env.GOOGLE_DRIVE_FOLDER_ID ?? '' }} --creds {{ $env.GOOGLE_CREDS_PATH ?? '/opt/apps/job-hunter/credentials.json' }}"
+      }
+    },
+    {
+      "id": "parse-indeed-offers",
+      "name": "Parse: Indeed Offers",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [480, 0],
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "jsCode": "// Parse JSON output from csv_parser.py — always non-blocking.\n// csv_parser.py outputs [] on any error or missing file, so exitCode\n// check is a safety net only.\nconst result = $input.first().json;\nconst exitCode = result.exitCode ?? 0;\nconst stdout = (result.stdout ?? '').trim();\n\nif (exitCode !== 0) {\n  console.log('[Read: Indeed CSV] csv_parser.py exit ' + exitCode + ' — treating as empty result');\n  return [{ json: { offers: [], source: 'indeed', count: 0 } }];\n}\n\nlet offers = [];\ntry {\n  offers = JSON.parse(stdout || '[]');\n  if (!Array.isArray(offers)) offers = [];\n} catch (err) {\n  console.log('[Parse: Indeed Offers] Failed to parse CSV output: ' + stdout.slice(0, 200) + ' — returning []');\n  offers = [];\n}\n\nconsole.log('[Parse: Indeed Offers] Loaded ' + offers.length + ' Indeed offers from CSV');\nreturn [{ json: { offers: offers, source: 'indeed', count: offers.length } }];"
+      }
+    }
+  ],
+  "connections": {
+    "Schedule Trigger": {
+      "main": [[{ "node": "Read: Indeed CSV", "type": "main", "index": 0 }]]
+    },
+    "Read: Indeed CSV": {
+      "main": [[{ "node": "Parse: Indeed Offers", "type": "main", "index": 0 }]]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1",
+    "saveDataSuccessExecution": "all",
+    "saveExecutionProgress": true,
+    "callerPolicy": "workflowsFromSameOwner"
+  },
+  "staticData": null,
+  "meta": {
+    "templateCredsSetupCompleted": false,
+    "instanceId": "job-hunter"
+  },
+  "active": false,
+  "tags": [
+    { "name": "job-hunter" },
+    { "name": "epic-8-cowork-indeed-fetching" },
+    { "name": "sprint-0-read-indeed-csv" }
+  ]
+}
