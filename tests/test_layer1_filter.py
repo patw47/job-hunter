@@ -168,9 +168,24 @@ class TestRemoteFilter(unittest.TestCase):
         passed, _ = apply_layer1(_offer(title="Remote AI Engineer"))
         assert passed is True
 
-    def test_remote_body_passes(self) -> None:
-        passed, _ = apply_layer1(_offer(title="AI Engineer", description="This is a remote position."))
+    def test_strong_remote_body_passes(self) -> None:
+        passed, _ = apply_layer1(_offer(title="AI Engineer", description="This is a fully remote position."))
         assert passed is True
+
+    def test_weak_remote_body_alone_is_ignored(self) -> None:
+        # A loose 'remote' mention in prose is not a remote signal
+        passed, reason = apply_layer1(_offer(title="AI Engineer", description="This is a remote position."))
+        assert passed is False
+        assert reason.startswith("IGNORED:")
+
+    def test_onsite_body_wins_over_remote_mention(self) -> None:
+        # Voleon case: 'Expected to work onsite Tuesday-Thursday' + 'remote' elsewhere
+        passed, reason = apply_layer1(_offer(
+            title="Executive Assistant",
+            description="Expected to work onsite Tuesday-Thursday. We have a remote-friendly tech stack.",
+        ))
+        assert passed is False
+        assert "on-site" in reason
 
     def test_job_type_compound_remote_passes(self) -> None:
         passed, _ = apply_layer1(_offer(title="AI Engineer", job_type="CDI - Remote"))
@@ -290,7 +305,7 @@ class TestCascadeDetection(unittest.TestCase):
         assert passed is False
 
     def test_step4_description_fallback_when_title_empty(self) -> None:
-        passed, _ = apply_layer1(_offer(title="AI Engineer", job_type="", location="", description="remote position in France"))
+        passed, _ = apply_layer1(_offer(title="AI Engineer", job_type="", location="", description="100% remote position in France"))
         assert passed is True
 
     def test_step5_no_match_ignored(self) -> None:

@@ -56,6 +56,14 @@ _FULL_REMOTE_POSSIBLE_RE: Final[re.Pattern[str]] = re.compile(
     r"full[\s\-]+remote[\s\-]+possible",
     re.IGNORECASE,
 )
+# Prose mentions "remote" loosely ("remote-friendly culture", "no remote") —
+# only explicit phrasing qualifies a description as remote.
+_STRONG_REMOTE_RE: Final[re.Pattern[str]] = re.compile(
+    r"\b(fully[\s\-]remote|100\s*%\s*remote|full[\s\-]remote|remote[\s\-]first"
+    r"|work[\s\-]from[\s\-]anywhere|t[eé]l[eé]travail\s+(?:complet|total|int[eé]gral)"
+    r"|enti[eè]rement\s+[aà]\s+distance)\b",
+    re.IGNORECASE,
+)
 
 # ── Junior/internship filter ─────────────────────────────────────────────────
 
@@ -66,8 +74,14 @@ _JUNIOR_RE: Final[re.Pattern[str]] = re.compile(
 
 
 def _detect_work_type(offer: dict) -> str:
-    """Cascade: job_type → location → title → description. Returns remote/hybrid/onsite/unknown."""
-    for field in ("job_type", "location", "title", "description"):
+    """Cascade: job_type → location → title → description. Returns remote/hybrid/onsite/unknown.
+
+    Short structured fields trust any marker. In the description, explicit
+    onsite/hybrid wording wins over a loose 'remote' mention ('Expected to
+    work onsite Tuesday–Thursday' must reject even if 'remote' appears
+    elsewhere in the text), and only strong remote phrasing qualifies.
+    """
+    for field in ("job_type", "location", "title"):
         text = offer.get(field) or ""
         if _REMOTE_RE.search(text):
             return "remote"
@@ -75,6 +89,13 @@ def _detect_work_type(offer: dict) -> str:
             return "hybrid"
         if _ONSITE_RE.search(text):
             return "onsite"
+    body = offer.get("description") or ""
+    if _ONSITE_RE.search(body):
+        return "onsite"
+    if _HYBRID_RE.search(body):
+        return "hybrid"
+    if _STRONG_REMOTE_RE.search(body):
+        return "remote"
     return "unknown"
 
 
