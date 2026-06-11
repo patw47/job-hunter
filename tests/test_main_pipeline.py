@@ -1,5 +1,5 @@
 """
-Tests for csv_parser.py — offline, fixture CSV strings only. No Drive, no n8n.
+Tests for csv_parser.py and offer_merger.py — offline, no Drive, no n8n.
 """
 from __future__ import annotations
 
@@ -14,6 +14,7 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 
 import csv_parser
 from csv_parser import load_indeed_csv, parse_indeed_csv
+from offer_merger import merge_offers
 
 CANONICAL_COLUMNS = csv_parser.EXPECTED_COLUMNS
 
@@ -208,6 +209,165 @@ class TestLoadIndeedCsvFromFile(unittest.TestCase):
             self.assertEqual(len(offers), 2)
         finally:
             tmp_path.unlink(missing_ok=True)
+
+
+def _indeed_offer(**overrides: object) -> dict:
+    base: dict = {
+        "url": "https://fr.indeed.com/job/1",
+        "title": "AI Engineer",
+        "company": "Acme",
+        "location": "Remote",
+        "description": "Build AI systems.",
+        "job_type": "remote",
+        "date_posted": "2026-06-11",
+        "source": "indeed",
+        "match_rate": "78.5",
+        "skills_found": "python,llm",
+    }
+    base.update(overrides)
+    return base
+
+
+def _linkedin_offer(**overrides: object) -> dict:
+    base: dict = {
+        "url": "https://www.linkedin.com/jobs/view/1",
+        "title": "ML Engineer",
+        "company": "Globex",
+        "location": "Remote",
+        "description": "ML role.",
+        "job_type": "full_time",
+        "date_posted": "2026-06-01",
+        "source": "linkedin",
+    }
+    base.update(overrides)
+    return base
+
+
+class TestMergeIndeedEmptyLinkedIn30(unittest.TestCase):
+    """AC1: Indeed CSV vide + LinkedIn 30 offres → 30 offres source linkedin."""
+
+    def setUp(self) -> None:
+        linkedin = [
+            _linkedin_offer(url=f"https://www.linkedin.com/jobs/view/{i}")
+            for i in range(30)
+        ]
+        self.result = merge_offers([], linkedin)
+
+    def test_count(self) -> None:
+        self.assertEqual(len(self.result), 30)
+
+    def test_source_is_linkedin(self) -> None:
+        for offer in self.result:
+            self.assertEqual(offer["source"], "linkedin")
+
+    def test_match_rate_null(self) -> None:
+        for offer in self.result:
+            self.assertIsNone(offer["match_rate"])
+
+    def test_skills_found_null(self) -> None:
+        for offer in self.result:
+            self.assertIsNone(offer["skills_found"])
+
+
+class TestMergeIndeed15LinkedInEmpty(unittest.TestCase):
+    """AC2: Indeed 15 offres + LinkedIn vide (CAPTCHA) → 15 offres source indeed."""
+
+    def setUp(self) -> None:
+        indeed = [
+            _indeed_offer(url=f"https://fr.indeed.com/job/{i}")
+            for i in range(15)
+        ]
+        self.result = merge_offers(indeed, [])
+
+    def test_count(self) -> None:
+        self.assertEqual(len(self.result), 15)
+
+    def test_source_is_indeed(self) -> None:
+        for offer in self.result:
+            self.assertEqual(offer["source"], "indeed")
+
+    def test_match_rate_preserved(self) -> None:
+        for offer in self.result:
+            self.assertEqual(offer["match_rate"], "78.5")
+
+
+class TestMergeDedupIntraSource(unittest.TestCase):
+    """AC3: Indeed 5 + LinkedIn 5, 2 URLs identiques → 8 offres uniques."""
+
+    def setUp(self) -> None:
+        shared = [
+            "https://fr.indeed.com/job/shared-1",
+            "https://fr.indeed.com/job/shared-2",
+        ]
+        indeed = [
+            _indeed_offer(url=shared[0]),
+            _indeed_offer(url=shared[1]),
+            _indeed_offer(url="https://fr.indeed.com/job/unique-1"),
+            _indeed_offer(url="https://fr.indeed.com/job/unique-2"),
+            _indeed_offer(url="https://fr.indeed.com/job/unique-3"),
+        ]
+        linkedin = [
+            _linkedin_offer(url=shared[0]),
+            _linkedin_offer(url=shared[1]),
+            _linkedin_offer(url="https://www.linkedin.com/jobs/view/unique-a"),
+            _linkedin_offer(url="https://www.linkedin.com/jobs/view/unique-b"),
+            _linkedin_offer(url="https://www.linkedin.com/jobs/view/unique-c"),
+        ]
+        self.result = merge_offers(indeed, linkedin)
+
+    def test_count_is_8(self) -> None:
+        self.assertEqual(len(self.result), 8)
+
+    def test_no_duplicate_urls(self) -> None:
+        urls = [o["url"] for o in self.result]
+        self.assertEqual(len(urls), len(set(urls)))
+
+    def test_duplicate_url_kept_as_indeed(self) -> None:
+        shared_url = "https://fr.indeed.com/job/shared-1"
+        matches = [o for o in self.result if o["url"] == shared_url]
+        self.assertEqual(len(matches), 1)
+        self.assertEqual(matches[0]["source"], "indeed")
+
+
+class TestMergeSourcePreservation(unittest.TestCase):
+    """AC4: Le champ source est conservé fidèlement pour chaque offre."""
+
+    def test_indeed_source_preserved(self) -> None:
+        result = merge_offers([_indeed_offer()], [])
+        self.assertEqual(result[0]["source"], "indeed")
+
+    def test_linkedin_source_preserved(self) -> None:
+        result = merge_offers([], [_linkedin_offer()])
+        self.assertEqual(result[0]["source"], "linkedin")
+
+    def test_mixed_sources_preserved(self) -> None:
+        result = merge_offers(
+            [_indeed_offer(url="https://fr.indeed.com/job/1")],
+            [_linkedin_offer(url="https://www.linkedin.com/jobs/view/1")],
+        )
+        sources = [o["source"] for o in result]
+        self.assertIn("indeed", sources)
+        self.assertIn("linkedin", sources)
+
+    def test_match_rate_null_for_linkedin(self) -> None:
+        result = merge_offers([], [_linkedin_offer()])
+        self.assertIsNone(result[0]["match_rate"])
+
+    def test_skills_found_null_for_linkedin(self) -> None:
+        result = merge_offers([], [_linkedin_offer()])
+        self.assertIsNone(result[0]["skills_found"])
+
+    def test_match_rate_preserved_for_indeed(self) -> None:
+        result = merge_offers([_indeed_offer(match_rate="78.5")], [])
+        self.assertEqual(result[0]["match_rate"], "78.5")
+
+    def test_indeed_before_linkedin_in_output(self) -> None:
+        result = merge_offers(
+            [_indeed_offer(url="https://fr.indeed.com/job/1")],
+            [_linkedin_offer(url="https://www.linkedin.com/jobs/view/1")],
+        )
+        self.assertEqual(result[0]["source"], "indeed")
+        self.assertEqual(result[1]["source"], "linkedin")
 
 
 if __name__ == "__main__":
