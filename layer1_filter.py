@@ -56,6 +56,20 @@ _FULL_REMOTE_POSSIBLE_RE: Final[re.Pattern[str]] = re.compile(
     r"full[\s\-]+remote[\s\-]+possible",
     re.IGNORECASE,
 )
+# LinkedIn lists located jobs as "City, Region, Country" but country-wide
+# remote jobs as the bare country name — a strong structural remote signal.
+_COUNTRY_ONLY_LOCATIONS: Final[frozenset[str]] = frozenset({
+    "suisse", "switzerland", "schweiz", "svizzera",
+    "france", "royaume-uni", "united kingdom", "uk", "angleterre", "england",
+    "union européenne", "european union", "europe",
+    "allemagne", "germany", "deutschland", "pays-bas", "netherlands",
+    "irlande", "ireland", "espagne", "spain", "portugal", "italie", "italy",
+    "belgique", "belgium", "autriche", "austria", "luxembourg",
+    "suède", "sweden", "norvège", "norway", "danemark", "denmark",
+    "finlande", "finland", "pologne", "poland", "estonie", "estonia",
+    "lettonie", "latvia", "lituanie", "lithuania", "tchéquie", "czechia",
+})
+
 # Prose mentions "remote" loosely ("remote-friendly culture", "no remote") —
 # only explicit phrasing qualifies a description as remote.
 _STRONG_REMOTE_RE: Final[re.Pattern[str]] = re.compile(
@@ -92,6 +106,8 @@ def _detect_work_type(offer: dict) -> str:
     body = offer.get("description") or ""
     if _ONSITE_RE.search(body):
         return "onsite"
+    if (offer.get("location") or "").strip().lower() in _COUNTRY_ONLY_LOCATIONS:
+        return "remote"
     if _HYBRID_RE.search(body):
         return "hybrid"
     if _STRONG_REMOTE_RE.search(body):

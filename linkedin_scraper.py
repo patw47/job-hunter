@@ -464,7 +464,7 @@ async def run_scan() -> list[dict]:
                     break
                 logger.info("[%s] remote — %s ...", root, geo_label)
                 try:
-                    new = await _search_root(page, root, "3", seen_urls, remaining, geo_id)
+                    new = await _search_root(page, f"{root} remote", "3", seen_urls, remaining, geo_id)
                     all_offers.extend(new)
                     logger.info("  +%d new (total=%d unique)", len(new), len(seen_urls))
                 except CaptchaError:
@@ -494,7 +494,7 @@ async def run_scan() -> list[dict]:
                     logger.info("[%s] hybrid — %s ...", root, geo_label)
                     try:
                         # f_WT=2,3 → URL-encoded as 2%2C3
-                        new = await _search_root(page, root, "2%2C3", seen_urls, remaining, geo_id)
+                        new = await _search_root(page, f"{root} remote", "2%2C3", seen_urls, remaining, geo_id)
                         all_offers.extend(new)
                         logger.info("  +%d new (total=%d unique)", len(new), len(seen_urls))
                     except CaptchaError:

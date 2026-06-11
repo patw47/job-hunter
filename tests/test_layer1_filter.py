@@ -351,3 +351,29 @@ class TestAcceptanceCriteria(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TestCountryOnlyLocation(unittest.TestCase):
+    """Location = bare country name → LinkedIn country-wide remote listing."""
+
+    def test_country_location_passes_as_remote(self) -> None:
+        passed, reason = apply_layer1(_offer(title="AI Engineer", location="Suisse"))
+        assert passed is True
+        assert "remote" in reason
+
+    def test_country_location_english(self) -> None:
+        passed, _ = apply_layer1(_offer(title="LLM Engineer", location="United Kingdom"))
+        assert passed is True
+
+    def test_city_location_not_remote(self) -> None:
+        passed, reason = apply_layer1(_offer(title="AI Engineer", location="Zurich, Zurich, Suisse"))
+        assert passed is False
+        assert reason.startswith("IGNORED:")
+
+    def test_explicit_onsite_beats_country_location(self) -> None:
+        passed, reason = apply_layer1(_offer(
+            title="AI Engineer", location="Suisse",
+            description="This role is on-site in our Zurich office.",
+        ))
+        assert passed is False
+        assert "on-site" in reason
