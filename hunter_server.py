@@ -458,11 +458,50 @@ def _handle_generate(body: dict) -> dict:
     matches_sheet.update_cell(cell.row, 12, str(cv_path))
     matches_sheet.update_cell(cell.row, 13, str(letter_path))
 
+    # Epic 5 S4: YAML header + Drive upload (public link) + links in MATCHES.
+    # Best-effort — a Drive failure must not lose the generated documents.
+    cv_url = letter_url = None
+    try:
+        from datetime import date as _date
+
+        from drive_uploader import DriveUploader, prepend_yaml_header
+
+        today = _date.today()
+        meta = {
+            "Company": offer_data["company"],
+            "Position": offer_data["title"],
+            "Offer URL": offer_data["url"],
+            "Detection date": row[1] if len(row) > 1 else "",
+            "Match Rate": f"{row[8]}%" if len(row) > 8 and row[8] else "",
+            "Language": "EN",
+            "Status": "Generated",
+        }
+        slug = "".join(
+            c for c in offer_data["company"] if c.isalnum() or c in " -_"
+        ).strip().replace(" ", "_") or "Company"
+        date_str = today.strftime("%Y-%m-%d")
+        uploader = DriveUploader()
+        cv_url = uploader.upload_document(
+            prepend_yaml_header(cv_text, meta),
+            f"CV_Patricia_Wintrebert_{slug}_{date_str}.md",
+            today.strftime("%Y-%m"),
+        )
+        letter_url = uploader.upload_document(
+            prepend_yaml_header(letter_text, meta),
+            f"LM_Patricia_Wintrebert_{slug}_{date_str}.md",
+            today.strftime("%Y-%m"),
+        )
+        uploader.update_matches(job_id, cv_url, letter_url)
+    except Exception as exc:
+        logger.warning("Drive upload failed for %s: %s", job_id, exc)
+
     return {
         "ok": True,
         "job_id": job_id,
         "cv_path": str(cv_path),
         "letter_path": str(letter_path),
+        "cv_drive": cv_url,
+        "letter_drive": letter_url,
         "offer": {"title": offer_data["title"], "company": offer_data["company"]},
     }
 
@@ -480,6 +519,11 @@ def _extract_document(raw: str) -> str:
     if blocks:
         return max(blocks, key=len).strip()
     m = re.search(r"^---\s*\n.*", raw, re.S | re.M)
+    if m:
+        return m.group(0).strip()
+    # Last resort: drop narration lines before the first markdown heading
+    # (the Kraken CV had 92 lines of prose before '## CV GÉNÉRÉ').
+    m = re.search(r"^#{1,6} .*", raw, re.S | re.M)
     if m:
         return m.group(0).strip()
     return raw.strip()
@@ -503,10 +547,12 @@ def _spawn_generation(url_hash: str, chat_id: str, company: str, bot_token: str)
             result = {"ok": False, "error": str(exc)}
         if result.get("ok"):
             offer = result.get("offer", {})
+            cv_link = result.get("cv_drive") or result.get("cv_path")
+            letter_link = result.get("letter_drive") or result.get("letter_path")
             text = (
                 f"✅ Documents prêts : {offer.get('company', company)} — {offer.get('title', '')}\n"
-                f"📄 CV : {result.get('cv_path')}\n"
-                f"📝 Lettre : {result.get('letter_path')}"
+                f"📄 CV : {cv_link}\n"
+                f"📝 Lettre : {letter_link}"
             )
         else:
             text = f"❌ Génération échouée ({company}) : {result.get('error', '?')}"
@@ -664,6 +710,8 @@ def build_message(skill, brief):
         "Brief reçu depuis n8n :\n"
         + json.dumps(brief, ensure_ascii=False, indent=2)
         + f"\n\nApplique la skill {skill} selon SKILL.md."
+        + "\n\nIMPORTANT : réponds UNIQUEMENT avec le livrable final, dans un seul bloc"
+        + " ```markdown — aucun commentaire, aucune narration avant ou après le bloc."
     )
 
 

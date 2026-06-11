@@ -97,3 +97,9 @@ class TestExtractDocument(unittest.TestCase):
 
     def test_raw_passthrough_when_no_marker(self) -> None:
         assert self.fn("  # CV direct  ") == "# CV direct"
+
+    def test_heading_fallback_strips_narration(self) -> None:
+        raw = "Je vais lire la skill.\n**Analyse :** blabla\n\n## CV GÉNÉRÉ — Kraken\n# Patricia Wintrebert\nContenu."
+        out = self.fn(raw)
+        assert out.startswith("## CV GÉNÉRÉ")
+        assert "Je vais lire" not in out
