@@ -1,0 +1,18 @@
+[Unit]
+Description=Hunter Callback Poller — Telegram cards bot to bridge (job-hunter)
+After=network-online.target hunter-server.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=thehunter
+Group=thehunter
+WorkingDirectory=/opt/apps/job-hunter
+EnvironmentFile=/opt/apps/job-hunter/.env
+Environment=HOME=/home/thehunter
+ExecStart=/home/thehunter/venv/bin/python3 /opt/apps/job-hunter/callback_poller.py
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target
