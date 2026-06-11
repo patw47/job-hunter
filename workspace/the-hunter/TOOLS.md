@@ -77,15 +77,22 @@ Quand Patricia demande une correction (« dans la lettre Kraken, remplace X par 
 1. Retrouver le job_id : `grep -il "<entreprise>" /opt/apps/job-hunter/offers/*.json`
 2. Lire le document concerné, appliquer la **correction ciblée** demandée —
    ne pas régénérer le document entier, ne pas toucher au reste.
-3. Sauvegarder le fichier au même emplacement.
-4. Renvoyer le document corrigé à Patricia via le bot cartes :
+3. **Sauvegarder le fichier AU MÊME EMPLACEMENT** (`/opt/apps/job-hunter/generated/<job_id>/cv.md`
+   ou `cover_letter.md`) — jamais dans /tmp ni ailleurs : ce fichier est la
+   source des futures conversions et corrections.
+4. **Convertir en DOCX + PDF** (Patricia ne veut JAMAIS recevoir de .md) :
+   ```bash
+   cd /opt/apps/job-hunter
+   /home/thehunter/venv/bin/python3 -c "from document_converter import convert_document; print(convert_document('generated/<job_id>/cv.md'))"
+   ```
+5. Envoyer le **PDF** (et le DOCX) à Patricia via le bot cartes :
    ```bash
    set -a; . /opt/apps/job-hunter/.env; set +a
    curl -s -F chat_id=$TELEGRAM_HUNTER_CHAT_ID \
-        -F document=@/opt/apps/job-hunter/generated/<job_id>/cover_letter.md \
-        -F caption="📝 Lettre corrigée — <Entreprise>" \
+        -F document=@/opt/apps/job-hunter/generated/<job_id>/cv.pdf \
+        -F caption="📄 CV corrigé — <Entreprise>" \
         "https://api.telegram.org/bot$TELEGRAM_HUNTER_BOT_TOKEN/sendDocument"
    ```
-5. Si la demande est une préférence de style **générale** (« n'utilise plus
+6. Si la demande est une préférence de style **générale** (« n'utilise plus
    jamais cette formule »), l'ajouter AUSSI au Feedback log de SOUL.md pour
    que toutes les futures générations en tiennent compte.
