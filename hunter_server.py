@@ -556,8 +556,11 @@ def _spawn_generation(url_hash: str, chat_id: str, company: str, bot_token: str)
             # accounts — deliver the documents straight into the chat.
             if bot_token and chat_id:
                 from datetime import date as _date
+                from pathlib import Path
 
                 from telegram_notifier import send_document
+
+                from document_converter import convert_document
 
                 slug = "".join(
                     c for c in offer.get("company", company) if c.isalnum() or c in " -_"
@@ -567,15 +570,23 @@ def _spawn_generation(url_hash: str, chat_id: str, company: str, bot_token: str)
                     (result.get("cv_path"), "CV", "📄 CV"),
                     (result.get("letter_path"), "LM", "📝 Lettre de motivation"),
                 ):
-                    if path:
+                    if not path:
+                        continue
+                    # Recruiters get DOCX + PDF; raw .md only if conversion fails.
+                    try:
+                        deliverables = convert_document(path)
+                    except Exception as exc:
+                        logger.error("conversion failed for %s: %s", path, exc)
+                        deliverables = []
+                    for out in deliverables or [Path(path)]:
                         try:
                             send_document(
-                                bot_token, chat_id, path,
-                                filename=f"{prefix}_Patricia_Wintrebert_{slug}_{date_str}.md",
-                                caption=f"{label} — {offer.get('company', company)}",
+                                bot_token, chat_id, str(out),
+                                filename=f"{prefix}_Patricia_Wintrebert_{slug}_{date_str}{Path(out).suffix}",
+                                caption=f"{label} ({Path(out).suffix.lstrip('.').upper()}) — {offer.get('company', company)}",
                             )
                         except Exception as exc:
-                            logger.error("sendDocument failed for %s: %s", path, exc)
+                            logger.error("sendDocument failed for %s: %s", out, exc)
         else:
             text = f"❌ Génération échouée ({company}) : {result.get('error', '?')}"
         if bot_token and chat_id:

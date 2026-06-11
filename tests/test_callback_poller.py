@@ -103,3 +103,36 @@ class TestExtractDocument(unittest.TestCase):
         out = self.fn(raw)
         assert out.startswith("## CV GÉNÉRÉ")
         assert "Je vais lire" not in out
+
+
+class TestDocumentConverter(unittest.TestCase):
+    def test_pandoc_failure_returns_false(self) -> None:
+        import document_converter as dc
+        with patch.object(dc.subprocess, "run", side_effect=FileNotFoundError):
+            assert dc.md_to_docx("/tmp/x.md", "/tmp/x.docx") is False
+
+    def test_pandoc_nonzero_returns_false(self) -> None:
+        import document_converter as dc
+        fake = type("R", (), {"returncode": 1, "stderr": "boom"})()
+        with patch.object(dc.subprocess, "run", return_value=fake):
+            assert dc.md_to_pdf("/tmp/x.md", "/tmp/x.pdf") is False
+
+    def test_convert_document_returns_empty_on_failures(self) -> None:
+        import document_converter as dc
+        with patch.object(dc, "md_to_docx", return_value=False), \
+             patch.object(dc, "md_to_pdf", return_value=False):
+            assert dc.convert_document("/tmp/doc.md") == []
+
+    def test_convert_document_collects_existing_outputs(self) -> None:
+        import tempfile, pathlib
+        import document_converter as dc
+        with tempfile.TemporaryDirectory() as td:
+            md = pathlib.Path(td) / "doc.md"
+            md.write_text("# Hi")
+            def fake_ok(src, out):
+                pathlib.Path(out).write_text("x")
+                return True
+            with patch.object(dc, "md_to_docx", side_effect=fake_ok), \
+                 patch.object(dc, "md_to_pdf", side_effect=fake_ok):
+                produced = dc.convert_document(md)
+            assert [p.suffix for p in produced] == [".docx", ".pdf"]
