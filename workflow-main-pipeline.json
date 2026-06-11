@@ -88,33 +88,20 @@
         0
       ],
       "parameters": {
-        "jsCode": "// Format scan_date as dd.mm.yyyy and extract offers for dedup\nconst scanResult = $input.first().json.scan_result || $input.first().json;\nconst offers = scanResult.offers || [];\n\nlet scanDate;\ntry {\n  const d = new Date(scanResult.scanDate);\n  const dd = String(d.getDate()).padStart(2, '0');\n  const mm = String(d.getMonth() + 1).padStart(2, '0');\n  const yyyy = d.getFullYear();\n  scanDate = `${dd}.${mm}.${yyyy}`;\n} catch (_) {\n  const now = new Date();\n  scanDate = `${String(now.getDate()).padStart(2,'0')}.${String(now.getMonth()+1).padStart(2,'0')}.${now.getFullYear()}`;\n}\n\nreturn [{ json: { offers, scan_date: scanDate } }];"
+        "jsCode": "// Format scan_date as dd.mm.yyyy and extract offers for dedup\nconst scanResult = $input.first().json.scan_result || $input.first().json;\nconst offers = scanResult.offers || [];\n\nlet scanDate;\ntry {\n  const d = new Date(scanResult.scanDate);\n  const dd = String(d.getDate()).padStart(2, '0');\n  const mm = String(d.getMonth() + 1).padStart(2, '0');\n  const yyyy = d.getFullYear();\n  scanDate = `${dd}.${mm}.${yyyy}`;\n} catch (_) {\n  const now = new Date();\n  scanDate = `${String(now.getDate()).padStart(2,'0')}.${String(now.getMonth()+1).padStart(2,'0')}.${now.getFullYear()}`;\n}\n\nconst payload = { offers, scan_date: scanDate };\nconst payload_b64 = Buffer.from(JSON.stringify(payload)).toString('base64');\nreturn [{ json: { payload_b64, scan_date: scanDate, offers_count: offers.length } }];"
       }
     },
     {
       "id": "dedup-check",
       "name": "Dedup: Check + Log",
-      "type": "n8n-nodes-base.httpRequest",
-      "typeVersion": 4.2,
+      "type": "n8n-nodes-base.executeCommand",
+      "typeVersion": 1,
       "position": [
         1440,
         0
       ],
       "parameters": {
-        "method": "POST",
-        "url": "=http://127.0.0.1:{{ $env.HUNTER_BRIDGE_PORT ?? '18798' }}/dedup",
-        "sendBody": true,
-        "contentType": "raw",
-        "rawContentType": "application/json",
-        "body": "={{ JSON.stringify($json) }}",
-        "options": {
-          "timeout": 60000,
-          "response": {
-            "response": {
-              "responseFormat": "json"
-            }
-          }
-        }
+        "command": "=echo '{{ $json.payload_b64 }}' | base64 --decode | curl -s -X POST http://127.0.0.1:18798/dedup -H 'Content-Type: application/json' --data-binary @-"
       }
     },
     {
@@ -128,59 +115,33 @@
       ],
       "parameters": {
         "mode": "runOnceForAllItems",
-        "jsCode": "// Split new_offers from /dedup response into LinkedIn vs Indeed.\n// Indeed offers already have match_rate + skills_found from CSV.\n// LinkedIn offers need Layer1 + Layer2 scoring.\nconst dedupResult = $input.first().json;\nconst newOffers = dedupResult.new_offers || [];\nconst scanDate = dedupResult.scan_date || '';\n\nconst linkedinOffers = newOffers.filter(o => o.source === 'linkedin');\nconst indeedOffers = newOffers.filter(o => o.source !== 'linkedin');\n\nconsole.log('[Filter: Extract LinkedIn] linkedin=' + linkedinOffers.length + ' indeed=' + indeedOffers.length + ' / ' + newOffers.length + ' new offers');\n\nreturn [{ json: { linkedin_offers: linkedinOffers, indeed_offers: indeedOffers, scan_date: scanDate } }];"
+        "jsCode": "// Parse /dedup stdout, split new_offers LinkedIn vs Indeed, prepare /layer1 payload.\nconst out = $input.first().json.stdout || '{}';\nlet dedupResult;\ntry { dedupResult = JSON.parse(out); } catch (e) { dedupResult = {}; }\nconst newOffers = dedupResult.new_offers || [];\nconst scanDate = dedupResult.scan_date || '';\n\nconst linkedinOffers = newOffers.filter(o => o.source === 'linkedin');\nconst indeedOffers = newOffers.filter(o => o.source !== 'linkedin');\n\nconsole.log('[Filter] new=' + newOffers.length + ' linkedin=' + linkedinOffers.length + ' indeed=' + indeedOffers.length);\n\nconst payload_b64 = Buffer.from(JSON.stringify({ offers: linkedinOffers, scan_date: scanDate })).toString('base64');\nreturn [{ json: { payload_b64, linkedin_offers: linkedinOffers, indeed_offers: indeedOffers, scan_date: scanDate } }];\n"
       }
     },
     {
       "id": "layer1-filter-linkedin",
       "name": "Layer1: Filter LinkedIn",
-      "type": "n8n-nodes-base.httpRequest",
-      "typeVersion": 4.2,
+      "type": "n8n-nodes-base.executeCommand",
+      "typeVersion": 1,
       "position": [
         1920,
         0
       ],
       "parameters": {
-        "method": "POST",
-        "url": "=http://127.0.0.1:{{ $env.HUNTER_BRIDGE_PORT ?? '18798' }}/layer1",
-        "sendBody": true,
-        "contentType": "raw",
-        "rawContentType": "application/json",
-        "body": "={{ JSON.stringify({ offers: $json.linkedin_offers, scan_date: $json.scan_date }) }}",
-        "options": {
-          "timeout": 60000,
-          "response": {
-            "response": {
-              "responseFormat": "json"
-            }
-          }
-        }
+        "command": "=echo '{{ $json.payload_b64 }}' | base64 --decode | curl -s -X POST http://127.0.0.1:18798/layer1 -H 'Content-Type: application/json' --data-binary @-"
       }
     },
     {
       "id": "layer2-score-linkedin",
       "name": "Layer2: Score LinkedIn",
-      "type": "n8n-nodes-base.httpRequest",
-      "typeVersion": 4.2,
+      "type": "n8n-nodes-base.executeCommand",
+      "typeVersion": 1,
       "position": [
         2160,
         0
       ],
       "parameters": {
-        "method": "POST",
-        "url": "=http://127.0.0.1:{{ $env.HUNTER_BRIDGE_PORT ?? '18798' }}/layer2",
-        "sendBody": true,
-        "contentType": "raw",
-        "rawContentType": "application/json",
-        "body": "={{ JSON.stringify({ offers: $json.passed, scan_date: $json.scan_date, threshold: 0.6 }) }}",
-        "options": {
-          "timeout": 120000,
-          "response": {
-            "response": {
-              "responseFormat": "json"
-            }
-          }
-        }
+        "command": "=echo '{{ $json.payload_b64 }}' | base64 --decode | curl -s -X POST http://127.0.0.1:18798/layer2 -H 'Content-Type: application/json' --data-binary @-"
       }
     },
     {
@@ -194,7 +155,7 @@
       ],
       "parameters": {
         "mode": "runOnceForAllItems",
-        "jsCode": "// Merge Indeed qualified (match_rate from CSV) + LinkedIn high_match (from Layer2).\n// Normalise LinkedIn match_rate from 0-1 fraction to percentage string.\n// Compute job_id for LinkedIn via SHA-256[:16] of normalised URL.\nconst crypto = require('crypto');\n\nfunction normalizeUrl(url) {\n  try {\n    const u = new URL(url || '');\n    u.search = '';\n    u.hash = '';\n    return u.toString();\n  } catch (e) { return url || ''; }\n}\n\nfunction computeJobId(url) {\n  return crypto.createHash('sha256').update(normalizeUrl(url)).digest('hex').slice(0, 16);\n}\n\nfunction toIsoDate(ddmmyyyy) {\n  const parts = (ddmmyyyy || '').split('.');\n  if (parts.length === 3) return parts[2] + '-' + parts[1] + '-' + parts[0];\n  return ddmmyyyy || '';\n}\n\nconst filterData = $('Filter: Extract LinkedIn').first().json;\nconst indeedOffers = filterData.indeed_offers || [];\nconst scanDate = filterData.scan_date || '';\nconst scanDateIso = toIsoDate(scanDate);\n\n// LinkedIn high_match from Layer2 response (match_rate is 0-1 fraction)\nconst linkedinHighMatch = $json.high_match || [];\n\n// Indeed: keep offers where match_rate (string percentage) >= 60.0\nconst qualifiedIndeed = indeedOffers\n  .filter(o => parseFloat(o.match_rate || '0') >= 60.0)\n  .map(o => ({\n    job_id: o.job_id || computeJobId(o.url || ''),\n    date_scanned: scanDateIso,\n    title: o.title || '',\n    company: o.company || '',\n    location: o.location || '',\n    remote: o.remote || '',\n    url: o.url || '',\n    source: 'indeed',\n    match_rate: o.match_rate || '0',\n    skills_found: o.skills_found || '',\n    description: o.description || '',\n    status: 'new',\n  }));\n\n// LinkedIn: convert match_rate 0-1 → percentage string, compute job_id\nconst qualifiedLinkedin = linkedinHighMatch.map(o => ({\n  job_id: computeJobId(o.url || ''),\n  date_scanned: scanDateIso,\n  title: o.title || '',\n  company: o.company || '',\n  location: o.location || '',\n  remote: o.job_type || '',\n  url: o.url || '',\n  source: 'linkedin',\n  match_rate: (parseFloat(o.match_rate || '0') * 100).toFixed(1),\n  skills_found: Array.isArray(o.skills_found) ? o.skills_found.join(',') : (o.skills_found || ''),\n  description: o.description || '',\n  status: 'new',\n}));\n\n// Indeed first (already scored), LinkedIn appended\nconst newMatches = [...qualifiedIndeed, ...qualifiedLinkedin];\n\nconst payloadB64 = Buffer.from(JSON.stringify({ new_matches: newMatches })).toString('base64');\n\nconsole.log('[Qualify] indeed=' + qualifiedIndeed.length + ' linkedin=' + qualifiedLinkedin.length + ' total=' + newMatches.length);\n\nreturn [{ json: { payload_b64: payloadB64, new_matches_count: newMatches.length } }];"
+        "jsCode": "// Merge Indeed qualified (match_rate from CSV) + LinkedIn high_match (from Layer2).\n// Normalise LinkedIn match_rate from 0-1 fraction to percentage string.\n// Compute job_id for LinkedIn via SHA-256[:16] of normalised URL.\nconst crypto = require('crypto');\n\nfunction normalizeUrl(url) {\n  try {\n    const u = new URL(url || '');\n    u.search = '';\n    u.hash = '';\n    return u.toString();\n  } catch (e) { return url || ''; }\n}\n\nfunction computeJobId(url) {\n  return crypto.createHash('sha256').update(normalizeUrl(url)).digest('hex').slice(0, 16);\n}\n\nfunction toIsoDate(ddmmyyyy) {\n  const parts = (ddmmyyyy || '').split('.');\n  if (parts.length === 3) return parts[2] + '-' + parts[1] + '-' + parts[0];\n  return ddmmyyyy || '';\n}\n\nconst filterData = $('Filter: Extract LinkedIn').first().json;\nconst indeedOffers = filterData.indeed_offers || [];\nconst scanDate = filterData.scan_date || '';\nconst scanDateIso = toIsoDate(scanDate);\n\n// LinkedIn high_match from Layer2 response (match_rate is 0-1 fraction)\nlet l2;\ntry { l2 = JSON.parse($json.stdout || '{}'); } catch (e) { l2 = {}; }\nconst linkedinHighMatch = l2.high_match || [];\n\n// Indeed: keep offers where match_rate (string percentage) >= 60.0\nconst qualifiedIndeed = indeedOffers\n  .filter(o => parseFloat(o.match_rate || '0') >= 60.0)\n  .map(o => ({\n    job_id: o.job_id || computeJobId(o.url || ''),\n    date_scanned: scanDateIso,\n    title: o.title || '',\n    company: o.company || '',\n    location: o.location || '',\n    remote: o.remote || '',\n    url: o.url || '',\n    source: 'indeed',\n    match_rate: o.match_rate || '0',\n    skills_found: o.skills_found || '',\n    description: o.description || '',\n    status: 'new',\n  }));\n\n// LinkedIn: convert match_rate 0-1 → percentage string, compute job_id\nconst qualifiedLinkedin = linkedinHighMatch.map(o => ({\n  job_id: computeJobId(o.url || ''),\n  date_scanned: scanDateIso,\n  title: o.title || '',\n  company: o.company || '',\n  location: o.location || '',\n  remote: o.job_type || '',\n  url: o.url || '',\n  source: 'linkedin',\n  match_rate: (parseFloat(o.match_rate || '0') * 100).toFixed(1),\n  skills_found: Array.isArray(o.skills_found) ? o.skills_found.join(',') : (o.skills_found || ''),\n  description: o.description || '',\n  status: 'new',\n}));\n\n// Indeed first (already scored), LinkedIn appended\nconst newMatches = [...qualifiedIndeed, ...qualifiedLinkedin];\n\nconst payloadB64 = Buffer.from(JSON.stringify({ new_matches: newMatches })).toString('base64');\n\nconsole.log('[Qualify] indeed=' + qualifiedIndeed.length + ' linkedin=' + qualifiedLinkedin.length + ' total=' + newMatches.length);\n\nreturn [{ json: { payload_b64: payloadB64, new_matches_count: newMatches.length } }];"
       }
     },
     {
@@ -236,6 +197,20 @@
       "parameters": {
         "command": "=echo '{{ $json.payload_b64 }}' | base64 --decode | TELEGRAM_HUNTER_BOT_TOKEN=\"{{ $env.TELEGRAM_HUNTER_BOT_TOKEN ?? '' }}\" TELEGRAM_HUNTER_CHAT_ID=\"{{ $env.TELEGRAM_HUNTER_CHAT_ID ?? '' }}\" HUNTER_BRIDGE_URL=\"http://127.0.0.1:{{ $env.HUNTER_BRIDGE_PORT ?? 18798 }}\" /home/thehunter/venv/bin/python3 /opt/apps/job-hunter/notification_sender.py"
       }
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "jsCode": "// Parse /layer1 stdout and prepare /layer2 payload (threshold 0.6).\nconst out = $input.first().json.stdout || '{}';\nlet l1;\ntry { l1 = JSON.parse(out); } catch (e) { l1 = {}; }\nconst passed = l1.passed || [];\nconst scanDate = $('Filter: Extract LinkedIn').first().json.scan_date || '';\nconsole.log('[Layer1] passed=' + passed.length + ' rejected=' + ((l1.rejected || []).length));\nconst payload_b64 = Buffer.from(JSON.stringify({ offers: passed, scan_date: scanDate, threshold: 0.6 })).toString('base64');\nreturn [{ json: { payload_b64 } }];\n"
+      },
+      "id": "prepare-layer2-request",
+      "name": "Prepare: Layer2 Request",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        2010,
+        140
+      ]
     }
   ],
   "connections": {
@@ -331,7 +306,7 @@
       "main": [
         [
           {
-            "node": "Layer2: Score LinkedIn",
+            "node": "Prepare: Layer2 Request",
             "type": "main",
             "index": 0
           }
@@ -376,6 +351,17 @@
         [
           {
             "node": "Notify: Send Telegram",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Prepare: Layer2 Request": {
+      "main": [
+        [
+          {
+            "node": "Layer2: Score LinkedIn",
             "type": "main",
             "index": 0
           }
