@@ -548,3 +548,23 @@ if __name__ == "__main__":
         print(f"Sending test card (85%) to chat_id={chat_id} ...")
         send_match_card(test_offer, token, chat_id)
         print("Done — check your Telegram.")
+
+
+def send_document(bot_token: str, chat_id: str, file_path: str, filename: str = "", caption: str = "") -> dict:
+    """Send a local file as a Telegram document (multipart via requests)."""
+    import requests
+
+    with open(file_path, "rb") as fh:
+        data = fh.read()
+    resp = requests.post(
+        f"https://api.telegram.org/bot{bot_token}/sendDocument",
+        data={"chat_id": chat_id, "caption": caption[:1024]},
+        files={"document": (filename or file_path.rsplit("/", 1)[-1], data)},
+        timeout=60,
+    )
+    result = resp.json()
+    if result.get("ok"):
+        logger.info("Telegram document sent: %s", filename or file_path)
+    else:
+        logger.error("sendDocument failed: %s", str(result)[:200])
+    return result
