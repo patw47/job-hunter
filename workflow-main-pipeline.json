@@ -1,0 +1,408 @@
+{
+  "id": "job-hunter-main-pipeline-001",
+  "name": "Job Hunter — Main Pipeline",
+  "nodes": [
+    {
+      "id": "schedule-trigger",
+      "name": "Schedule Trigger",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.1,
+      "position": [
+        0,
+        0
+      ],
+      "parameters": {
+        "rule": {
+          "interval": [
+            {
+              "field": "cronExpression",
+              "expression": "0 13 * * *"
+            }
+          ]
+        }
+      }
+    },
+    {
+      "id": "read-indeed-csv",
+      "name": "Read: Indeed CSV",
+      "type": "n8n-nodes-base.executeCommand",
+      "typeVersion": 1,
+      "position": [
+        240,
+        0
+      ],
+      "parameters": {
+        "command": "/home/thehunter/venv/bin/python3 /opt/apps/job-hunter/csv_parser.py --folder-id {{ $env.GOOGLE_DRIVE_FOLDER_ID ?? '' }} --creds {{ $env.GOOGLE_CREDS_PATH ?? '/opt/apps/job-hunter/credentials.json' }}"
+      }
+    },
+    {
+      "id": "parse-indeed-offers",
+      "name": "Parse: Indeed Offers",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        480,
+        0
+      ],
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "jsCode": "// Parse JSON output from csv_parser.py — always non-blocking.\n// csv_parser.py outputs [] on any error or missing file, so exitCode\n// check is a safety net only.\nconst result = $input.first().json;\nconst exitCode = result.exitCode ?? 0;\nconst stdout = (result.stdout ?? '').trim();\n\nif (exitCode !== 0) {\n  console.log('[Read: Indeed CSV] csv_parser.py exit ' + exitCode + ' — treating as empty result');\n  return [{ json: { offers: [], source: 'indeed', count: 0 } }];\n}\n\nlet offers = [];\ntry {\n  offers = JSON.parse(stdout || '[]');\n  if (!Array.isArray(offers)) offers = [];\n} catch (err) {\n  console.log('[Parse: Indeed Offers] Failed to parse CSV output: ' + stdout.slice(0, 200) + ' — returning []');\n  offers = [];\n}\n\nconsole.log('[Parse: Indeed Offers] Loaded ' + offers.length + ' Indeed offers from CSV');\nreturn [{ json: { offers: offers, source: 'indeed', count: offers.length } }];"
+      }
+    },
+    {
+      "id": "execute-linkedin-scan",
+      "name": "Execute Workflow: LinkedIn Scan",
+      "type": "n8n-nodes-base.executeWorkflow",
+      "typeVersion": 1,
+      "position": [
+        720,
+        0
+      ],
+      "parameters": {
+        "source": "database",
+        "workflowId": "={{ $env.LINKEDIN_WORKFLOW_ID ?? '' }}"
+      }
+    },
+    {
+      "id": "merge-indeed-linkedin",
+      "name": "Merge: Indeed + LinkedIn",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        960,
+        0
+      ],
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "jsCode": "// Merge Indeed (CSV) + LinkedIn (workflow) — dedup by URL intra-merge, cap 100.\nconst INDEED_CAP = 60;\nconst LINKEDIN_CAP = 40;\nconst GLOBAL_CAP = 100;\n\n// Indeed offers from Parse: Indeed Offers node (earlier in chain)\nconst indeedOffers = ($('Parse: Indeed Offers').first().json.offers || []).slice(0, INDEED_CAP);\n\n// LinkedIn offers — each $input item is one offer from Execute Workflow: LinkedIn Scan\nconst linkedinOffers = $input.all()\n  .map(item => item.json)\n  .filter(o => o && o.url)\n  .slice(0, LINKEDIN_CAP);\n\nfunction normalizeUrl(url) {\n  return (url || '').split('?')[0].split('#')[0];\n}\n\nconst seen = new Set();\nconst merged = [];\n\nfor (const offer of indeedOffers) {\n  const key = normalizeUrl(offer.url);\n  if (key && !seen.has(key)) {\n    seen.add(key);\n    merged.push({\n      url: offer.url || '',\n      title: offer.title || '',\n      company: offer.company || '',\n      location: offer.location || '',\n      description: offer.description || '',\n      job_type: offer.job_type || '',\n      date_posted: offer.date_posted || offer.date_scanned || '',\n      source: 'indeed',\n      match_rate: offer.match_rate || null,\n      skills_found: offer.skills_found || null,\n      job_id: offer.job_id || null,\n    });\n  }\n}\n\nfor (const offer of linkedinOffers) {\n  const key = normalizeUrl(offer.url);\n  if (key && !seen.has(key)) {\n    seen.add(key);\n    merged.push({\n      url: offer.url || '',\n      title: offer.title || '',\n      company: offer.company || '',\n      location: offer.location || '',\n      description: offer.description || '',\n      job_type: offer.job_type || '',\n      date_posted: offer.date_posted || '',\n      source: 'linkedin',\n      match_rate: null,\n      skills_found: null,\n    });\n  }\n}\n\nconst capped = merged.slice(0, GLOBAL_CAP);\nconsole.log('[Merge] indeed=' + indeedOffers.length + ' linkedin=' + linkedinOffers.length + ' → merged=' + capped.length);\n\nconst scanDate = new Date().toISOString().slice(0, 10);\nreturn [{ json: { offers: capped, count: capped.length, scanDate, source: 'merged' } }];"
+      }
+    },
+    {
+      "id": "prepare-dedup",
+      "name": "Prepare: Dedup Request",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1200,
+        0
+      ],
+      "parameters": {
+        "jsCode": "// Format scan_date as dd.mm.yyyy and extract offers for dedup\nconst scanResult = $input.first().json.scan_result || $input.first().json;\nconst offers = scanResult.offers || [];\n\nlet scanDate;\ntry {\n  const d = new Date(scanResult.scanDate);\n  const dd = String(d.getDate()).padStart(2, '0');\n  const mm = String(d.getMonth() + 1).padStart(2, '0');\n  const yyyy = d.getFullYear();\n  scanDate = `${dd}.${mm}.${yyyy}`;\n} catch (_) {\n  const now = new Date();\n  scanDate = `${String(now.getDate()).padStart(2,'0')}.${String(now.getMonth()+1).padStart(2,'0')}.${now.getFullYear()}`;\n}\n\nreturn [{ json: { offers, scan_date: scanDate } }];"
+      }
+    },
+    {
+      "id": "dedup-check",
+      "name": "Dedup: Check + Log",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        1440,
+        0
+      ],
+      "parameters": {
+        "method": "POST",
+        "url": "=http://127.0.0.1:{{ $env.HUNTER_BRIDGE_PORT ?? '18798' }}/dedup",
+        "sendBody": true,
+        "contentType": "raw",
+        "rawContentType": "application/json",
+        "body": "={{ JSON.stringify($json) }}",
+        "options": {
+          "timeout": 60000,
+          "response": {
+            "response": {
+              "responseFormat": "json"
+            }
+          }
+        }
+      }
+    },
+    {
+      "id": "filter-extract-linkedin",
+      "name": "Filter: Extract LinkedIn",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1680,
+        0
+      ],
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "jsCode": "// Split new_offers from /dedup response into LinkedIn vs Indeed.\n// Indeed offers already have match_rate + skills_found from CSV.\n// LinkedIn offers need Layer1 + Layer2 scoring.\nconst dedupResult = $input.first().json;\nconst newOffers = dedupResult.new_offers || [];\nconst scanDate = dedupResult.scan_date || '';\n\nconst linkedinOffers = newOffers.filter(o => o.source === 'linkedin');\nconst indeedOffers = newOffers.filter(o => o.source !== 'linkedin');\n\nconsole.log('[Filter: Extract LinkedIn] linkedin=' + linkedinOffers.length + ' indeed=' + indeedOffers.length + ' / ' + newOffers.length + ' new offers');\n\nreturn [{ json: { linkedin_offers: linkedinOffers, indeed_offers: indeedOffers, scan_date: scanDate } }];"
+      }
+    },
+    {
+      "id": "layer1-filter-linkedin",
+      "name": "Layer1: Filter LinkedIn",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        1920,
+        0
+      ],
+      "parameters": {
+        "method": "POST",
+        "url": "=http://127.0.0.1:{{ $env.HUNTER_BRIDGE_PORT ?? '18798' }}/layer1",
+        "sendBody": true,
+        "contentType": "raw",
+        "rawContentType": "application/json",
+        "body": "={{ JSON.stringify({ offers: $json.linkedin_offers, scan_date: $json.scan_date }) }}",
+        "options": {
+          "timeout": 60000,
+          "response": {
+            "response": {
+              "responseFormat": "json"
+            }
+          }
+        }
+      }
+    },
+    {
+      "id": "layer2-score-linkedin",
+      "name": "Layer2: Score LinkedIn",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        2160,
+        0
+      ],
+      "parameters": {
+        "method": "POST",
+        "url": "=http://127.0.0.1:{{ $env.HUNTER_BRIDGE_PORT ?? '18798' }}/layer2",
+        "sendBody": true,
+        "contentType": "raw",
+        "rawContentType": "application/json",
+        "body": "={{ JSON.stringify({ offers: $json.passed, scan_date: $json.scan_date, threshold: 0.6 }) }}",
+        "options": {
+          "timeout": 120000,
+          "response": {
+            "response": {
+              "responseFormat": "json"
+            }
+          }
+        }
+      }
+    },
+    {
+      "id": "qualify-merge-prepare",
+      "name": "Qualify: Merge + Prepare",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        2400,
+        0
+      ],
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "jsCode": "// Merge Indeed qualified (match_rate from CSV) + LinkedIn high_match (from Layer2).\n// Normalise LinkedIn match_rate from 0-1 fraction to percentage string.\n// Compute job_id for LinkedIn via SHA-256[:16] of normalised URL.\nconst crypto = require('crypto');\n\nfunction normalizeUrl(url) {\n  try {\n    const u = new URL(url || '');\n    u.search = '';\n    u.hash = '';\n    return u.toString();\n  } catch (e) { return url || ''; }\n}\n\nfunction computeJobId(url) {\n  return crypto.createHash('sha256').update(normalizeUrl(url)).digest('hex').slice(0, 16);\n}\n\nfunction toIsoDate(ddmmyyyy) {\n  const parts = (ddmmyyyy || '').split('.');\n  if (parts.length === 3) return parts[2] + '-' + parts[1] + '-' + parts[0];\n  return ddmmyyyy || '';\n}\n\nconst filterData = $('Filter: Extract LinkedIn').first().json;\nconst indeedOffers = filterData.indeed_offers || [];\nconst scanDate = filterData.scan_date || '';\nconst scanDateIso = toIsoDate(scanDate);\n\n// LinkedIn high_match from Layer2 response (match_rate is 0-1 fraction)\nconst linkedinHighMatch = $json.high_match || [];\n\n// Indeed: keep offers where match_rate (string percentage) >= 60.0\nconst qualifiedIndeed = indeedOffers\n  .filter(o => parseFloat(o.match_rate || '0') >= 60.0)\n  .map(o => ({\n    job_id: o.job_id || computeJobId(o.url || ''),\n    date_scanned: scanDateIso,\n    title: o.title || '',\n    company: o.company || '',\n    location: o.location || '',\n    remote: o.remote || '',\n    url: o.url || '',\n    source: 'indeed',\n    match_rate: o.match_rate || '0',\n    skills_found: o.skills_found || '',\n    status: 'new',\n  }));\n\n// LinkedIn: convert match_rate 0-1 → percentage string, compute job_id\nconst qualifiedLinkedin = linkedinHighMatch.map(o => ({\n  job_id: computeJobId(o.url || ''),\n  date_scanned: scanDateIso,\n  title: o.title || '',\n  company: o.company || '',\n  location: o.location || '',\n  remote: o.job_type || '',\n  url: o.url || '',\n  source: 'linkedin',\n  match_rate: (parseFloat(o.match_rate || '0') * 100).toFixed(1),\n  skills_found: Array.isArray(o.skills_found) ? o.skills_found.join(',') : (o.skills_found || ''),\n  status: 'new',\n}));\n\n// Indeed first (already scored), LinkedIn appended\nconst newMatches = [...qualifiedIndeed, ...qualifiedLinkedin];\n\nconst payloadB64 = Buffer.from(JSON.stringify({ new_matches: newMatches })).toString('base64');\n\nconsole.log('[Qualify] indeed=' + qualifiedIndeed.length + ' linkedin=' + qualifiedLinkedin.length + ' total=' + newMatches.length);\n\nreturn [{ json: { payload_b64: payloadB64, new_matches_count: newMatches.length } }];"
+      }
+    },
+    {
+      "id": "write-matches-pending",
+      "name": "Write: Matches + Pending",
+      "type": "n8n-nodes-base.executeCommand",
+      "typeVersion": 1,
+      "position": [
+        2640,
+        0
+      ],
+      "parameters": {
+        "command": "echo '{{ $json.payload_b64 }}' | base64 --decode | /home/thehunter/venv/bin/python3 /opt/apps/job-hunter/pipeline_writer.py"
+      }
+    },
+    {
+      "id": "notify-prepare-payload",
+      "name": "Notify: Prepare Payload",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        2880,
+        0
+      ],
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "jsCode": "// Retrieve payload_b64 from Qualify node for Telegram notification dispatch.\nconst payloadB64 = $('Qualify: Merge + Prepare').first().json.payload_b64 || '';\nconsole.log('[Notify] payload_b64 length=' + payloadB64.length);\nreturn [{ json: { payload_b64: payloadB64 } }];"
+      }
+    },
+    {
+      "id": "notify-send-telegram",
+      "name": "Notify: Send Telegram",
+      "type": "n8n-nodes-base.executeCommand",
+      "typeVersion": 1,
+      "position": [
+        3120,
+        0
+      ],
+      "parameters": {
+        "command": "echo '{{ $json.payload_b64 }}' | base64 --decode | TELEGRAM_HUNTER_BOT_TOKEN=\"{{ $env.TELEGRAM_HUNTER_BOT_TOKEN ?? '' }}\" TELEGRAM_HUNTER_CHAT_ID=\"{{ $env.TELEGRAM_HUNTER_CHAT_ID ?? '' }}\" HUNTER_BRIDGE_URL=\"http://127.0.0.1:{{ $env.HUNTER_BRIDGE_PORT ?? 18798 }}\" /home/thehunter/venv/bin/python3 /opt/apps/job-hunter/notification_sender.py"
+      }
+    }
+  ],
+  "connections": {
+    "Schedule Trigger": {
+      "main": [
+        [
+          {
+            "node": "Read: Indeed CSV",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Read: Indeed CSV": {
+      "main": [
+        [
+          {
+            "node": "Parse: Indeed Offers",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Parse: Indeed Offers": {
+      "main": [
+        [
+          {
+            "node": "Execute Workflow: LinkedIn Scan",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Execute Workflow: LinkedIn Scan": {
+      "main": [
+        [
+          {
+            "node": "Merge: Indeed + LinkedIn",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Merge: Indeed + LinkedIn": {
+      "main": [
+        [
+          {
+            "node": "Prepare: Dedup Request",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Prepare: Dedup Request": {
+      "main": [
+        [
+          {
+            "node": "Dedup: Check + Log",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Dedup: Check + Log": {
+      "main": [
+        [
+          {
+            "node": "Filter: Extract LinkedIn",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Filter: Extract LinkedIn": {
+      "main": [
+        [
+          {
+            "node": "Layer1: Filter LinkedIn",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Layer1: Filter LinkedIn": {
+      "main": [
+        [
+          {
+            "node": "Layer2: Score LinkedIn",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Layer2: Score LinkedIn": {
+      "main": [
+        [
+          {
+            "node": "Qualify: Merge + Prepare",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Qualify: Merge + Prepare": {
+      "main": [
+        [
+          {
+            "node": "Write: Matches + Pending",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Write: Matches + Pending": {
+      "main": [
+        [
+          {
+            "node": "Notify: Prepare Payload",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Notify: Prepare Payload": {
+      "main": [
+        [
+          {
+            "node": "Notify: Send Telegram",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1",
+    "saveDataSuccessExecution": "all",
+    "saveExecutionProgress": true,
+    "callerPolicy": "workflowsFromSameOwner"
+  },
+  "staticData": null,
+  "meta": {
+    "templateCredsSetupCompleted": false,
+    "instanceId": "job-hunter"
+  },
+  "active": false,
+  "tags": [
+    {
+      "name": "job-hunter"
+    },
+    {
+      "name": "epic-8-cowork-indeed-fetching"
+    },
+    {
+      "name": "sprint-3-notifications-telegram-indeed"
+    }
+  ]
+}
