@@ -150,21 +150,35 @@ def _handle_dedup(body: dict) -> dict:
 _MATCH_RATE_TARGET: int = 10
 
 
+def _term_in_text(term: str, text: str) -> bool:
+    """Word-boundary match — substring matching credits 'R' or 'Make' on any text."""
+    import re
+    return re.search(r"(?<!\w)" + re.escape(term.lower()) + r"(?!\w)", text) is not None
+
+
 def _score_offer(offer: dict, keywords: set[str], aliases: dict[str, list[str]]) -> tuple[float, list[str]]:
     """Score an offer against SKILLS_MASTER keywords. Returns (match_rate, skills_found).
 
     match_rate = distinct profile skills found / _MATCH_RATE_TARGET, capped at 1.0.
+    The alias table maps offer-side terms to profile skills ("Vector DB" → Qdrant…),
+    so it is inverted here: an offer mentioning the term credits each mapped skill.
     """
     if not keywords:
         return 0.0, []
     text = " ".join([offer.get("title") or "", offer.get("description") or ""]).lower()
+
+    offer_terms_by_skill: dict[str, list[str]] = {}
+    for term, skills in aliases.items():
+        for skill in skills:
+            offer_terms_by_skill.setdefault(skill, []).append(term)
+
     matched: list[str] = []
     for kw in keywords:
-        if kw.lower() in text:
+        if _term_in_text(kw, text):
             matched.append(kw)
             continue
-        for synonym in aliases.get(kw, []):
-            if synonym.lower() in text:
+        for term in offer_terms_by_skill.get(kw, []):
+            if _term_in_text(term, text):
                 matched.append(kw)
                 break
     rate = min(len(matched) / _MATCH_RATE_TARGET, 1.0)
