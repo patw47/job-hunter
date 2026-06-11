@@ -19,6 +19,14 @@ from offer_merger import merge_offers
 from deduplication import compute_hash, is_duplicate, log_hashes
 from layer2_scoring import write_match_if_qualified, MATCH_THRESHOLD
 from prioritizer import run_prioritizer, DAILY_CAP
+from telegram_notifier import (
+    _build_indeed_card_text,
+    _build_keyboard,
+    _is_indeed_complete,
+    send_indeed_card,
+)
+import notification_sender
+from notification_sender import send_notifications
 
 SCAN_DATE = "2026-06-11"
 
@@ -644,6 +652,230 @@ class TestAC5Cap25PendingMatches(unittest.TestCase):
 
     def test_daily_cap_constant_is_25(self) -> None:
         self.assertEqual(DAILY_CAP, 25)
+
+
+def _indeed_offer_complete(**overrides: object) -> dict:
+    """Indeed offer with all fields required by _is_indeed_complete."""
+    base: dict = {
+        "url": "https://fr.indeed.com/job/42",
+        "title": "AI Engineer",
+        "company": "Acme",
+        "location": "Paris",
+        "remote": "true",
+        "source": "indeed",
+        "match_rate": "82.0",
+        "skills_found": "python,llm",
+        "job_id": "abc0000000000042",
+        "date_scanned": SCAN_DATE,
+    }
+    base.update(overrides)
+    return base
+
+
+# ---------------------------------------------------------------------------
+# S3-AC1 — Indeed complet → carte directe, pas d'appel Haiku
+# ---------------------------------------------------------------------------
+
+class TestS3AC1IndeedCompleteNoHaiku(unittest.TestCase):
+    """S3-AC1: Indeed all fields → card built directly, _call_analyze NOT called."""
+
+    def test_is_complete_all_fields_present(self) -> None:
+        self.assertTrue(_is_indeed_complete(_indeed_offer_complete()))
+
+    def test_is_incomplete_company_empty(self) -> None:
+        self.assertFalse(_is_indeed_complete(_indeed_offer_complete(company="")))
+
+    def test_is_incomplete_skills_empty(self) -> None:
+        self.assertFalse(_is_indeed_complete(_indeed_offer_complete(skills_found="")))
+
+    def test_is_incomplete_location_whitespace_only(self) -> None:
+        self.assertFalse(_is_indeed_complete(_indeed_offer_complete(location="   ")))
+
+    def test_build_card_contains_title(self) -> None:
+        self.assertIn("AI Engineer", _build_indeed_card_text(_indeed_offer_complete()))
+
+    def test_build_card_contains_match_rate_pct(self) -> None:
+        self.assertIn("82%", _build_indeed_card_text(_indeed_offer_complete()))
+
+    def test_build_card_contains_skills(self) -> None:
+        self.assertIn("python,llm", _build_indeed_card_text(_indeed_offer_complete()))
+
+    def test_build_card_contains_source_indeed(self) -> None:
+        self.assertIn("Indeed", _build_indeed_card_text(_indeed_offer_complete()))
+
+    def test_build_card_contains_url(self) -> None:
+        self.assertIn("https://fr.indeed.com/job/42", _build_indeed_card_text(_indeed_offer_complete()))
+
+    def test_send_notifications_complete_indeed_skips_analyze(self) -> None:
+        with patch("notification_sender._call_analyze") as mock_analyze, \
+             patch("notification_sender.telegram_notifier.send_indeed_card") as mock_card:
+            mock_card.return_value = None
+            send_notifications(
+                [_indeed_offer_complete(match_rate="82.0")],
+                "tok", "cid", "http://127.0.0.1:18798",
+            )
+        mock_card.assert_called_once()
+        mock_analyze.assert_not_called()
+
+
+# ---------------------------------------------------------------------------
+# S3-AC2 — Indeed incomplet → fallback POST /analyze
+# ---------------------------------------------------------------------------
+
+class TestS3AC2IndeedIncompleteFallback(unittest.TestCase):
+    """S3-AC2: Indeed company="" → fallback POST /analyze."""
+
+    def test_incomplete_indeed_calls_analyze(self) -> None:
+        offer = _indeed_offer_complete(company="", match_rate="82.0")
+        with patch("notification_sender._call_analyze", return_value="card text") as mock_analyze, \
+             patch("notification_sender.telegram_notifier.send_card_from_text", return_value=None):
+            send_notifications([offer], "tok", "cid", "http://127.0.0.1:18798")
+        mock_analyze.assert_called_once()
+
+    def test_incomplete_indeed_no_direct_card(self) -> None:
+        offer = _indeed_offer_complete(company="", match_rate="82.0")
+        with patch("notification_sender._call_analyze", return_value="card text"), \
+             patch("notification_sender.telegram_notifier.send_card_from_text", return_value=None), \
+             patch("notification_sender.telegram_notifier.send_indeed_card") as mock_direct:
+            send_notifications([offer], "tok", "cid", "http://127.0.0.1:18798")
+        mock_direct.assert_not_called()
+
+    def test_linkedin_high_match_calls_analyze_not_direct(self) -> None:
+        offer = _qualified_offer(99, source="linkedin")
+        offer["match_rate"] = "85.0"
+        with patch("notification_sender._call_analyze", return_value="card text") as mock_analyze, \
+             patch("notification_sender.telegram_notifier.send_card_from_text", return_value=None), \
+             patch("notification_sender.telegram_notifier.send_indeed_card") as mock_direct:
+            send_notifications([offer], "tok", "cid", "http://127.0.0.1:18798")
+        mock_analyze.assert_called_once()
+        mock_direct.assert_not_called()
+
+
+# ---------------------------------------------------------------------------
+# S3-AC3 — Digest trié : Indeed 78% avant LinkedIn 75%
+# ---------------------------------------------------------------------------
+
+class TestS3AC3DigestSortedMixed(unittest.TestCase):
+    """S3-AC3: LinkedIn 75% + Indeed 78% → digest sorted desc, Indeed first."""
+
+    def test_digest_indeed_before_linkedin_when_higher_rate(self) -> None:
+        linkedin = _qualified_offer(1, source="linkedin")  # match_rate="75.0"
+        indeed = _indeed_offer_complete(match_rate="78.0", url="https://fr.indeed.com/job/99")
+        captured: list = []
+        with patch("notification_sender.telegram_notifier.send_digest",
+                   side_effect=lambda o, t, c: captured.extend(o)):
+            send_notifications([linkedin, indeed], "tok", "cid", "http://127.0.0.1:18798")
+        self.assertEqual(len(captured), 2)
+        self.assertEqual(captured[0]["source"], "indeed")
+
+    def test_digest_sorted_descending_three_offers(self) -> None:
+        offers = [
+            _indeed_offer_complete(match_rate="61.0", url="https://fr.indeed.com/job/1"),
+            _indeed_offer_complete(match_rate="75.0", url="https://fr.indeed.com/job/2"),
+            _indeed_offer_complete(match_rate="68.0", url="https://fr.indeed.com/job/3"),
+        ]
+        captured: list = []
+        with patch("notification_sender.telegram_notifier.send_digest",
+                   side_effect=lambda o, t, c: captured.extend(o)):
+            send_notifications(offers, "tok", "cid", "http://127.0.0.1:18798")
+        rates = [float(o["match_rate"]) for o in captured]
+        self.assertEqual(rates, sorted(rates, reverse=True))
+
+    def test_below_60_not_in_digest(self) -> None:
+        offer = _indeed_offer_complete(match_rate="59.9", url="https://fr.indeed.com/job/5")
+        captured: list = []
+        with patch("notification_sender.telegram_notifier.send_digest",
+                   side_effect=lambda o, t, c: captured.extend(o)):
+            send_notifications([offer], "tok", "cid", "http://127.0.0.1:18798")
+        self.assertEqual(len(captured), 0)
+
+
+# ---------------------------------------------------------------------------
+# S3-AC4 — Cap 25 toutes sources confondues
+# ---------------------------------------------------------------------------
+
+class TestS3AC4Cap25NotifRespected(unittest.TestCase):
+    """S3-AC4: 25 offers all sent (cap enforced upstream by run_prioritizer)."""
+
+    def test_25_high_offers_all_sent_individually(self) -> None:
+        offers = [
+            _indeed_offer_complete(
+                match_rate="82.0",
+                url=f"https://fr.indeed.com/job/{i}",
+            )
+            for i in range(25)
+        ]
+        sent: list = []
+        with patch("notification_sender.telegram_notifier.send_indeed_card",
+                   side_effect=lambda o, t, c: sent.append(o)):
+            result = send_notifications(offers, "tok", "cid", "http://127.0.0.1:18798")
+        self.assertEqual(len(sent), 25)
+        self.assertEqual(result["sent_individual"], 25)
+        self.assertEqual(result["sent_digest"], 0)
+
+    def test_empty_new_matches_sends_nothing(self) -> None:
+        with patch("notification_sender.telegram_notifier.send_indeed_card") as mock_c, \
+             patch("notification_sender.telegram_notifier.send_digest") as mock_d:
+            result = send_notifications([], "tok", "cid", "http://127.0.0.1:18798")
+        mock_c.assert_not_called()
+        mock_d.assert_not_called()
+        self.assertEqual(result["sent_individual"], 0)
+        self.assertEqual(result["sent_digest"], 0)
+
+    def test_mixed_sources_25_total(self) -> None:
+        indeed = [
+            _indeed_offer_complete(match_rate="82.0", url=f"https://fr.indeed.com/job/{i}")
+            for i in range(13)
+        ]
+        linkedin = [_qualified_offer(i + 100, source="linkedin") for i in range(12)]
+        for o in linkedin:
+            o["match_rate"] = "81.0"
+        with patch("notification_sender.telegram_notifier.send_indeed_card",
+                   side_effect=lambda o, t, c: None), \
+             patch("notification_sender._call_analyze", return_value="card"), \
+             patch("notification_sender.telegram_notifier.send_card_from_text",
+                   side_effect=lambda t, o, tok, c: None):
+            result = send_notifications(indeed + linkedin, "tok", "cid", "http://127.0.0.1:18798")
+        self.assertEqual(result["sent_individual"], 25)
+
+
+# ---------------------------------------------------------------------------
+# S3-AC5 — Boutons inline [✅ Générer CV] [❌ Ignorer] sur carte Indeed
+# ---------------------------------------------------------------------------
+
+class TestS3AC5InlineKeyboardIndeed(unittest.TestCase):
+    """S3-AC5: Boutons Générer CV et Ignorer présents sur carte Indeed."""
+
+    def _all_button_texts(self) -> list[str]:
+        kb = _build_keyboard("deadbeef", "https://fr.indeed.com/job/1")
+        return [btn["text"] for row in kb["inline_keyboard"] for btn in row]
+
+    def test_generate_cv_button_present(self) -> None:
+        self.assertTrue(any("Générer CV" in t for t in self._all_button_texts()))
+
+    def test_ignore_button_present(self) -> None:
+        self.assertTrue(any("Ignorer" in t for t in self._all_button_texts()))
+
+    def test_send_indeed_card_uses_markdown_parse_mode(self) -> None:
+        captured: list = []
+        with patch("telegram_notifier._telegram_post",
+                   side_effect=lambda t, m, p: captured.append(p) or {"ok": True}):
+            send_indeed_card(_indeed_offer_complete(), "tok", "cid")
+        self.assertEqual(captured[0]["parse_mode"], "Markdown")
+
+    def test_send_indeed_card_has_inline_keyboard(self) -> None:
+        captured: list = []
+        with patch("telegram_notifier._telegram_post",
+                   side_effect=lambda t, m, p: captured.append(p) or {"ok": True}):
+            send_indeed_card(_indeed_offer_complete(), "tok", "cid")
+        self.assertIn("inline_keyboard", captured[0]["reply_markup"])
+
+    def test_send_indeed_card_text_contains_indeed_badge(self) -> None:
+        captured: list = []
+        with patch("telegram_notifier._telegram_post",
+                   side_effect=lambda t, m, p: captured.append(p) or {"ok": True}):
+            send_indeed_card(_indeed_offer_complete(), "tok", "cid")
+        self.assertIn("Indeed", captured[0]["text"])
 
 
 if __name__ == "__main__":

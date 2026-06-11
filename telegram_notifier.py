@@ -57,6 +57,44 @@ def _keywords_line(value: list | set | str | None) -> str:
     return str(value).strip()
 
 
+def _remote_label(offer: dict) -> str:
+    """Derive Remote/On-site label from offer fields."""
+    raw = str(offer.get("remote", offer.get("job_type", ""))).strip().lower()
+    return "Remote" if raw in ("true", "yes", "remote", "1") else "On-site"
+
+
+def _is_indeed_complete(offer: dict) -> bool:
+    """Return True if all required Indeed card fields are non-empty."""
+    required = ("title", "company", "location", "match_rate", "skills_found", "url")
+    return all(str(offer.get(f, "")).strip() for f in required)
+
+
+def _build_indeed_card_text(offer: dict) -> str:
+    """Build Telegram Markdown card for a complete Indeed offer (no LLM call)."""
+    rate = offer.get("match_rate", 0)
+    if isinstance(rate, float) and rate <= 1.0:
+        rate_pct = int(rate * 100)
+    else:
+        rate_pct = int(float(str(rate)))
+
+    title = str(offer.get("title", "?"))
+    company = str(offer.get("company", "?"))
+    location = str(offer.get("location", "?"))
+    remote = _remote_label(offer)
+    url = str(offer.get("url", ""))
+    skills = str(offer.get("skills_found", ""))
+
+    return (
+        f"🎯 *{title}* — {company}\n"
+        f"📍 {location} | {remote}\n"
+        f"🔗 {url}\n"
+        f"\n"
+        f"*Match* : {rate_pct}% | Skills : {skills}\n"
+        f"\n"
+        f"⚡ Source : Indeed"
+    )
+
+
 def _build_card_text(offer: dict) -> str:
     """Build Telegram card message in HTML parse mode."""
     match_rate = offer.get("match_rate", 0)
@@ -200,6 +238,53 @@ def send_match_card(offer: dict, bot_token: str, chat_id: str) -> None:
 
     if result.get("ok"):
         logger.info("Telegram card sent: %s (hash=%s)", offer.get("title", "?"), h)
+    else:
+        description = result.get("description", str(result))
+        logger.error("Telegram sendMessage failed: %s", description)
+        raise RuntimeError(f"Telegram API error: {description}")
+
+
+def send_indeed_card(offer: dict, bot_token: str, chat_id: str) -> None:
+    """Send Telegram card for a complete Indeed offer (no LLM call)."""
+    url = str(offer.get("url", ""))
+    h = _url_hash(url)
+    text = _build_indeed_card_text(offer)
+    keyboard = _build_keyboard(h, url)
+
+    payload = {
+        "chat_id": chat_id,
+        "text": text,
+        "parse_mode": "Markdown",
+        "reply_markup": keyboard,
+        "disable_web_page_preview": True,
+    }
+
+    result = _telegram_post(bot_token, "sendMessage", payload)
+    if result.get("ok"):
+        logger.info("Telegram Indeed card sent: %s (hash=%s)", offer.get("title", "?"), h)
+    else:
+        description = result.get("description", str(result))
+        logger.error("Telegram sendMessage failed: %s", description)
+        raise RuntimeError(f"Telegram API error: {description}")
+
+
+def send_card_from_text(text: str, offer: dict, bot_token: str, chat_id: str) -> None:
+    """Send Telegram card using pre-built Markdown text (from /analyze Haiku)."""
+    url = str(offer.get("url", ""))
+    h = _url_hash(url)
+    keyboard = _build_keyboard(h, url)
+
+    payload = {
+        "chat_id": chat_id,
+        "text": text,
+        "parse_mode": "Markdown",
+        "reply_markup": keyboard,
+        "disable_web_page_preview": True,
+    }
+
+    result = _telegram_post(bot_token, "sendMessage", payload)
+    if result.get("ok"):
+        logger.info("Telegram card (from text) sent: %s (hash=%s)", offer.get("title", "?"), h)
     else:
         description = result.get("description", str(result))
         logger.error("Telegram sendMessage failed: %s", description)

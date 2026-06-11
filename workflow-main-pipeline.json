@@ -208,6 +208,33 @@
       "parameters": {
         "command": "echo '{{ $json.payload_b64 }}' | base64 --decode | /home/thehunter/venv/bin/python3 /opt/apps/job-hunter/pipeline_writer.py"
       }
+    },
+    {
+      "id": "notify-prepare-payload",
+      "name": "Notify: Prepare Payload",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        2880,
+        0
+      ],
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "jsCode": "// Retrieve payload_b64 from Qualify node for Telegram notification dispatch.\nconst payloadB64 = $('Qualify: Merge + Prepare').first().json.payload_b64 || '';\nconsole.log('[Notify] payload_b64 length=' + payloadB64.length);\nreturn [{ json: { payload_b64: payloadB64 } }];"
+      }
+    },
+    {
+      "id": "notify-send-telegram",
+      "name": "Notify: Send Telegram",
+      "type": "n8n-nodes-base.executeCommand",
+      "typeVersion": 1,
+      "position": [
+        3120,
+        0
+      ],
+      "parameters": {
+        "command": "echo '{{ $json.payload_b64 }}' | base64 --decode | TELEGRAM_HUNTER_BOT_TOKEN=\"{{ $env.TELEGRAM_HUNTER_BOT_TOKEN ?? '' }}\" TELEGRAM_HUNTER_CHAT_ID=\"{{ $env.TELEGRAM_HUNTER_CHAT_ID ?? '' }}\" HUNTER_BRIDGE_URL=\"http://127.0.0.1:{{ $env.HUNTER_BRIDGE_PORT ?? 18798 }}\" /home/thehunter/venv/bin/python3 /opt/apps/job-hunter/notification_sender.py"
+      }
     }
   ],
   "connections": {
@@ -331,6 +358,28 @@
           }
         ]
       ]
+    },
+    "Write: Matches + Pending": {
+      "main": [
+        [
+          {
+            "node": "Notify: Prepare Payload",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Notify: Prepare Payload": {
+      "main": [
+        [
+          {
+            "node": "Notify: Send Telegram",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
     }
   },
   "settings": {
@@ -353,7 +402,7 @@
       "name": "epic-8-cowork-indeed-fetching"
     },
     {
-      "name": "sprint-2-scanned-hashes-matches"
+      "name": "sprint-3-notifications-telegram-indeed"
     }
   ]
 }
