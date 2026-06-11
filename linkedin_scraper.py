@@ -40,6 +40,17 @@ SCAN_ROOTS: list[str] = [
     "AI", "agent", "agentic", "GenAI", "automation",
     "LLM", "RAG", "ML", "full stack", "n8n", "Python", "developer",
 ]
+
+# Geographic targets from USER.md (priority order): Switzerland, UK, European
+# Union. Without geoId the guest endpoint serves US-centric recommendations.
+GEO_IDS: list[tuple[str, str]] = [
+    ("106693272", "Switzerland"),
+    ("101165590", "United Kingdom"),
+    ("91000000", "European Union"),
+]
+_geo_env = os.environ.get("LINKEDIN_GEO_IDS", "")
+if _geo_env.strip():
+    GEO_IDS = [(g.strip(), g.strip()) for g in _geo_env.split(",") if g.strip()]
 HYBRID_THRESHOLD: int = 10
 GLOBAL_CAP: int = 40
 DELAY_MIN: float = 3.0
@@ -301,10 +312,12 @@ async def _search_root(
     f_wt: str,
     seen_urls: set[str],
     remaining: int,
+    geo_id: str = "",
 ) -> list[dict]:
     """Navigate to a LinkedIn job search URL and collect up to `remaining` new unique offers."""
     encoded_query = query.replace(" ", "%20")
-    url = f"{_SEARCH_BASE}?keywords={encoded_query}&f_WT={f_wt}&position=1&pageNum=0"
+    geo_param = f"&geoId={geo_id}" if geo_id else ""
+    url = f"{_SEARCH_BASE}?keywords={encoded_query}&f_WT={f_wt}{geo_param}&position=1&pageNum=0"
     logger.info("GET %s", url)
     try:
         await page.goto(url, wait_until="networkidle", timeout=30000)
@@ -437,23 +450,29 @@ async def run_scan() -> list[dict]:
         logger.info("Guest endpoint mode — no login required")
 
         # ── Pass 1: Remote (f_WT=3) ───────────────────────────────────────────
-        logger.info("=== Pass 1: Remote (f_WT=3) — %d roots ===", len(SCAN_ROOTS))
-        for root in SCAN_ROOTS:
-            remaining = GLOBAL_CAP - len(seen_urls)
-            if remaining <= 0:
-                logger.info("Cap %d reached — stopping pass 1", GLOBAL_CAP)
+        logger.info(
+            "=== Pass 1: Remote (f_WT=3) — %d roots × %d geos ===",
+            len(SCAN_ROOTS), len(GEO_IDS),
+        )
+        for geo_id, geo_label in GEO_IDS:
+            if len(seen_urls) >= GLOBAL_CAP:
                 break
-            logger.info("[%s] remote ...", root)
-            try:
-                new = await _search_root(page, root, "3", seen_urls, remaining)
-                all_offers.extend(new)
-                logger.info("  +%d new (total=%d unique)", len(new), len(seen_urls))
-            except CaptchaError:
-                await browser.close()
-                raise
-            except Exception as exc:
-                logger.warning("  Error on root=%r: %s", root, exc)
-            await _random_delay()
+            for root in SCAN_ROOTS:
+                remaining = GLOBAL_CAP - len(seen_urls)
+                if remaining <= 0:
+                    logger.info("Cap %d reached — stopping pass 1", GLOBAL_CAP)
+                    break
+                logger.info("[%s] remote — %s ...", root, geo_label)
+                try:
+                    new = await _search_root(page, root, "3", seen_urls, remaining, geo_id)
+                    all_offers.extend(new)
+                    logger.info("  +%d new (total=%d unique)", len(new), len(seen_urls))
+                except CaptchaError:
+                    await browser.close()
+                    raise
+                except Exception as exc:
+                    logger.warning("  Error on root=%r: %s", root, exc)
+                await _random_delay()
 
         remote_count = len(seen_urls)
         logger.info("Pass 1 done: %d unique remote URLs", remote_count)
@@ -464,23 +483,26 @@ async def run_scan() -> list[dict]:
                 "=== Pass 2: Remote+Hybrid (f_WT=2,3) — remote=%d < threshold=%d ===",
                 remote_count, HYBRID_THRESHOLD,
             )
-            for root in SCAN_ROOTS:
-                remaining = GLOBAL_CAP - len(seen_urls)
-                if remaining <= 0:
-                    logger.info("Cap %d reached — stopping pass 2", GLOBAL_CAP)
+            for geo_id, geo_label in GEO_IDS:
+                if len(seen_urls) >= GLOBAL_CAP:
                     break
-                logger.info("[%s] hybrid ...", root)
-                try:
-                    # f_WT=2,3 → URL-encoded as 2%2C3
-                    new = await _search_root(page, root, "2%2C3", seen_urls, remaining)
-                    all_offers.extend(new)
-                    logger.info("  +%d new (total=%d unique)", len(new), len(seen_urls))
-                except CaptchaError:
-                    await browser.close()
-                    raise
-                except Exception as exc:
-                    logger.warning("  Error on root=%r: %s", root, exc)
-                await _random_delay()
+                for root in SCAN_ROOTS:
+                    remaining = GLOBAL_CAP - len(seen_urls)
+                    if remaining <= 0:
+                        logger.info("Cap %d reached — stopping pass 2", GLOBAL_CAP)
+                        break
+                    logger.info("[%s] hybrid — %s ...", root, geo_label)
+                    try:
+                        # f_WT=2,3 → URL-encoded as 2%2C3
+                        new = await _search_root(page, root, "2%2C3", seen_urls, remaining, geo_id)
+                        all_offers.extend(new)
+                        logger.info("  +%d new (total=%d unique)", len(new), len(seen_urls))
+                    except CaptchaError:
+                        await browser.close()
+                        raise
+                    except Exception as exc:
+                        logger.warning("  Error on root=%r: %s", root, exc)
+                    await _random_delay()
         else:
             logger.info(
                 "Pass 2 skipped: remote=%d >= threshold=%d", remote_count, HYBRID_THRESHOLD

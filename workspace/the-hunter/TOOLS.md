@@ -45,3 +45,23 @@ Script d'accès : `test_sheets.py` (smoke test) + modules internes du pipeline L
 - Endpoint local : `http://127.0.0.1:18798`
 - Routes : `/analyze` `/rewrite-cv` `/cover-letter` `/form-answers` `/report`
 - Appelé par n8n. Délègue à l'agent `the-hunter` via CLI OpenClaw.
+
+## Telegram — boutons des cartes (callback strings)
+
+Quand un message Telegram reçu est EXACTEMENT de la forme `action:hash`
+(ex : `ignore:55ca133f26f906d3`), ce n'est PAS une question de Patricia :
+c'est le clic d'un bouton inline d'une carte d'offre, relayé par le canal.
+
+Actions possibles : `ignore` · `snooze` · `generate` · `apply` · `skip` · `sent` · `detail`
+
+**Protocole obligatoire — ne jamais demander de clarification sur ces messages :**
+
+1. Exécuter immédiatement :
+   ```bash
+   curl -s -X POST http://127.0.0.1:18798/callback \
+     -H 'Content-Type: application/json' \
+     -d '{"callback_data":"<le message reçu tel quel>","chat_id":"<chat_id de la conversation>"}'
+   ```
+2. Le bridge met à jour MATCHES et retourne `{ok, action, url_hash, ...}`.
+3. Répondre à Patricia en UNE ligne : confirmation courte de l'action
+   (ex. « ❌ Ignoré » · « ⏰ Snoozé (1/2) » · « 🚀 Génération lancée »).
