@@ -463,6 +463,40 @@ def _handle_generate(body: dict) -> dict:
     }
 
 
+def _spawn_generation(url_hash: str, chat_id: str, company: str, bot_token: str) -> None:
+    """Run CV+letter generation in a background thread and confirm on Telegram.
+
+    The callback must answer Telegram within seconds while generation takes
+    minutes (two Sonnet calls); the n8n callbacks workflow used to own this
+    orchestration, the local callback poller path needs it server-side.
+    """
+    import threading
+
+    def _run() -> None:
+        from telegram_notifier import _telegram_post
+
+        try:
+            result = _handle_generate({"job_id": url_hash})
+        except Exception as exc:
+            result = {"ok": False, "error": str(exc)}
+        if result.get("ok"):
+            offer = result.get("offer", {})
+            text = (
+                f"✅ Documents prêts : {offer.get('company', company)} — {offer.get('title', '')}\n"
+                f"📄 CV : {result.get('cv_path')}\n"
+                f"📝 Lettre : {result.get('letter_path')}"
+            )
+        else:
+            text = f"❌ Génération échouée ({company}) : {result.get('error', '?')}"
+        if bot_token and chat_id:
+            try:
+                _telegram_post(bot_token, "sendMessage", {"chat_id": chat_id, "text": text})
+            except Exception as exc:
+                logger.error("generation notify failed: %s", exc)
+
+    threading.Thread(target=_run, daemon=True, name=f"generate-{url_hash[:8]}").start()
+
+
 def _handle_callback(body: dict) -> dict:
     """Route a Telegram callback_query by action prefix and update MATCHES."""
     from telegram_notifier import (
@@ -528,9 +562,10 @@ def _handle_callback(body: dict) -> dict:
                 edit_text = f"⏰ Snoozé ({count}/2) : {company}"
 
         elif action == "generate":
-            logger.info("GENERATE signal for hash=%s (Epic 5 queue)", url_hash)
+            logger.info("GENERATE signal for hash=%s — spawning generation", url_hash)
+            _spawn_generation(url_hash, chat_id, company, bot_token)
             answer_text = "🚀 Génération lancée"
-            edit_text = f"🚀 Génération CV+Lettre lancée : {company}"
+            edit_text = f"⏳ Génération CV+Lettre en cours : {company}"
 
         elif action == "apply":
             logger.info("APPLY signal for hash=%s (Epic 6 queue)", url_hash)
