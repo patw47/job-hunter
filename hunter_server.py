@@ -144,8 +144,17 @@ def _handle_dedup(body: dict) -> dict:
     }
 
 
+# Distinct profile skills found in an offer for a 100% match rate. Dividing by
+# the full SKILLS_MASTER size (~100 keywords) made 60% unreachable on real
+# offers; 6+ skills found in title+description now qualifies (threshold 0.6).
+_MATCH_RATE_TARGET: int = 10
+
+
 def _score_offer(offer: dict, keywords: set[str], aliases: dict[str, list[str]]) -> tuple[float, list[str]]:
-    """Score an offer against SKILLS_MASTER keywords. Returns (match_rate, skills_found)."""
+    """Score an offer against SKILLS_MASTER keywords. Returns (match_rate, skills_found).
+
+    match_rate = distinct profile skills found / _MATCH_RATE_TARGET, capped at 1.0.
+    """
     if not keywords:
         return 0.0, []
     text = " ".join([offer.get("title") or "", offer.get("description") or ""]).lower()
@@ -158,7 +167,8 @@ def _score_offer(offer: dict, keywords: set[str], aliases: dict[str, list[str]])
             if synonym.lower() in text:
                 matched.append(kw)
                 break
-    return round(len(matched) / len(keywords), 4), sorted(matched)
+    rate = min(len(matched) / _MATCH_RATE_TARGET, 1.0)
+    return round(rate, 4), sorted(matched)
 
 
 def _handle_layer1(body: dict) -> dict:
@@ -399,6 +409,19 @@ def _handle_generate(body: dict) -> dict:
         "url": row[6] if len(row) > 6 else "",
         "skills_found": row[9].split(", ") if len(row) > 9 and row[9] else [],
     }
+
+    # MATCHES has no description column: the offer text lives in the offers
+    # store written by pipeline_writer at scan time. CV and cover letter must
+    # stick to the actual offer description, so inject it when available.
+    offers_dir = Path(os.environ.get("OFFERS_STORE_DIR", "/opt/apps/job-hunter/offers"))
+    detail_path = offers_dir / f"{job_id}.json"
+    if detail_path.exists():
+        try:
+            detail = json.loads(detail_path.read_text(encoding="utf-8"))
+            if detail.get("description"):
+                offer_data["offer_description"] = detail["description"]
+        except Exception as exc:
+            logger.warning("generate: could not read offer detail %s: %s", detail_path, exc)
 
     try:
         cv_text = extract_inner(call_hunter(build_message("cv-rewriter", offer_data), "rewrite-cv", timeout=300))

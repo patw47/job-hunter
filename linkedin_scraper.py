@@ -20,6 +20,7 @@ import json
 import logging
 import os
 import random
+import re
 import sys
 from datetime import date
 from pathlib import Path
@@ -48,6 +49,18 @@ DELAY_MAX: float = 8.0
 # The authenticated /jobs/search/ page is unusable from a datacenter IP
 # (authwall when logged out, redirect loop with a bare li_at cookie).
 _SEARCH_BASE: str = "https://www.linkedin.com/jobs-guest/jobs/api/seeMoreJobPostings/search"
+_JOB_POSTING_BASE: str = "https://www.linkedin.com/jobs-guest/jobs/api/jobPosting/"
+
+# Layer 2 scores title + description, and CV generation needs the offer text:
+# guest search cards carry no description, so each offer is enriched from the
+# guest jobPosting endpoint after the scan passes.
+DESCRIPTION_MAX: int = 3000
+_JOB_ID_RE: re.Pattern[str] = re.compile(r"/jobs/view/(?:[^/?#]*?-)?(\d{6,})")
+_DESCRIPTION_SELECTORS: tuple[str, ...] = (
+    "div.show-more-less-html__markup",
+    "div.description__text",
+    "section.show-more-less-html",
+)
 _LOGIN_URL: str = "https://www.linkedin.com/login"
 
 _CAPTCHA_MARKERS: tuple[str, ...] = (
@@ -315,6 +328,57 @@ async def _search_root(
     return new_offers
 
 
+def extract_job_id(url: str) -> str:
+    """Extract the numeric LinkedIn job id from a /jobs/view/ URL ('' if absent)."""
+    m = _JOB_ID_RE.search(url or "")
+    return m.group(1) if m else ""
+
+
+async def _fetch_description(page: Any, offer_url: str) -> str:
+    """Fetch the offer description from the guest jobPosting endpoint.
+
+    Best-effort: any failure (no job id, navigation error, authwall redirect,
+    unknown DOM) returns '' without aborting the scan.
+    """
+    job_id = extract_job_id(offer_url)
+    if not job_id:
+        return ""
+    try:
+        await page.goto(
+            f"{_JOB_POSTING_BASE}{job_id}", wait_until="domcontentloaded", timeout=20000
+        )
+    except Exception as exc:
+        logger.warning("Description fetch failed for job %s: %s", job_id, exc)
+        return ""
+    # URL check only: description bodies legitimately contain words like
+    # "challenge", so content-based CAPTCHA markers would false-positive here.
+    if "authwall" in page.url or "/login" in page.url:
+        logger.warning("Authwall on job posting %s — description skipped", job_id)
+        return ""
+    for sel in _DESCRIPTION_SELECTORS:
+        try:
+            el = await page.query_selector(sel)
+            if el:
+                text = (await el.inner_text()).strip()
+                if text:
+                    return text[:DESCRIPTION_MAX]
+        except Exception:
+            continue
+    return ""
+
+
+async def _enrich_descriptions(page: Any, offers: list[dict]) -> None:
+    """Fill offer['description'] in place for every offer, with anti-bot delays."""
+    if not offers:
+        return
+    logger.info("=== Enriching %d offers with descriptions ===", len(offers))
+    for i, offer in enumerate(offers, start=1):
+        desc = await _fetch_description(page, offer.get("url", ""))
+        offer["description"] = desc
+        logger.info("  [%d/%d] %d chars — %s", i, len(offers), len(desc), offer.get("title", "")[:60])
+        await _random_delay()
+
+
 async def _random_delay() -> None:
     """Sleep a random duration in [DELAY_MIN, DELAY_MAX] seconds."""
     delay = random.uniform(DELAY_MIN, DELAY_MAX)
@@ -422,9 +486,11 @@ async def run_scan() -> list[dict]:
                 "Pass 2 skipped: remote=%d >= threshold=%d", remote_count, HYBRID_THRESHOLD
             )
 
+        offers = all_offers[:GLOBAL_CAP]
+        await _enrich_descriptions(page, offers)
         await browser.close()
 
-    return all_offers[:GLOBAL_CAP]
+    return offers
 
 
 # ── Entry point ────────────────────────────────────────────────────────────────
