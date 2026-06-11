@@ -438,8 +438,12 @@ def _handle_generate(body: dict) -> dict:
             logger.warning("generate: could not read offer detail %s: %s", detail_path, exc)
 
     try:
-        cv_text = extract_inner(call_hunter(build_message("cv-rewriter", offer_data), "rewrite-cv", timeout=300))
-        letter_text = extract_inner(call_hunter(build_message("cover-letter-writer", offer_data), "cover-letter", timeout=300))
+        cv_text = _extract_document(
+            extract_inner(call_hunter(build_message("cv-rewriter", offer_data), "rewrite-cv", timeout=300))
+        )
+        letter_text = _extract_document(
+            extract_inner(call_hunter(build_message("cover-letter-writer", offer_data), "cover-letter", timeout=300))
+        )
     except Exception as e:
         return {"ok": False, "error": f"generation failed: {e}", "job_id": job_id}
 
@@ -461,6 +465,24 @@ def _handle_generate(body: dict) -> dict:
         "letter_path": str(letter_path),
         "offer": {"title": offer_data["title"], "company": offer_data["company"]},
     }
+
+
+def _extract_document(raw: str) -> str:
+    """Strip the agent's reasoning monologue from a generated document.
+
+    The agent narrates ('Je vais lire la skill…') before the deliverable.
+    Preference order: longest fenced markdown block, then content from the
+    first YAML front-matter, then the raw text.
+    """
+    import re
+
+    blocks = re.findall(r"```(?:markdown|md)?\s*\n(.*?)```", raw, re.S)
+    if blocks:
+        return max(blocks, key=len).strip()
+    m = re.search(r"^---\s*\n.*", raw, re.S | re.M)
+    if m:
+        return m.group(0).strip()
+    return raw.strip()
 
 
 def _spawn_generation(url_hash: str, chat_id: str, company: str, bot_token: str) -> None:
