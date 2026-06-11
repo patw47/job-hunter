@@ -74,3 +74,26 @@ class TestRelayCallback(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TestExtractDocument(unittest.TestCase):
+    def setUp(self) -> None:
+        import hunter_server as hs
+        self.fn = hs._extract_document
+
+    def test_fenced_markdown_block_extracted(self) -> None:
+        raw = "Je vais lire la skill.\nVoici :\n```markdown\n---\nCompany: X\n---\n# CV\n```\nVoilà."
+        assert self.fn(raw) == "---\nCompany: X\n---\n# CV"
+
+    def test_longest_block_wins(self) -> None:
+        raw = "```md\ncourt\n```\nblabla\n```markdown\n# Long document\nLigne 2\nLigne 3\n```"
+        assert self.fn(raw).startswith("# Long document")
+
+    def test_yaml_frontmatter_fallback(self) -> None:
+        raw = "Monologue de l'agent.\n---\nCompany: Kraken\n---\n# CV Patricia"
+        out = self.fn(raw)
+        assert out.startswith("---")
+        assert "Monologue" not in out
+
+    def test_raw_passthrough_when_no_marker(self) -> None:
+        assert self.fn("  # CV direct  ") == "# CV direct"
