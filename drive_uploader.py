@@ -138,8 +138,18 @@ class DriveUploader:
         return created["id"]
 
     def _ensure_monthly_folder(self, year_month: str) -> str:
-        """Get or create job-hunter — Applications/{year_month}/ and return folder id."""
-        root_id = self._get_or_create_folder(None, DRIVE_ROOT_FOLDER)
+        """Get or create the monthly folder and return its id.
+
+        Service accounts have no storage quota of their own (Google policy),
+        so uploads must land inside a human-owned folder shared with the SA:
+        {GOOGLE_DRIVE_FOLDER_ID}/Applications/{year_month}/. Without the env
+        var, fall back to the legacy SA-rooted layout (tests, dev).
+        """
+        parent_id = os.environ.get("GOOGLE_DRIVE_FOLDER_ID", "")
+        if parent_id:
+            root_id = self._get_or_create_folder(parent_id, "Applications")
+        else:
+            root_id = self._get_or_create_folder(None, DRIVE_ROOT_FOLDER)
         return self._get_or_create_folder(root_id, year_month)
 
     def upload_document(self, content: str, filename: str, year_month: str) -> str:
