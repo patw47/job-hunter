@@ -61,7 +61,8 @@
       "parameters": {
         "source": "database",
         "workflowId": "={{ $env.LINKEDIN_WORKFLOW_ID ?? '' }}"
-      }
+      },
+      "onError": "continueRegularOutput"
     },
     {
       "id": "merge-indeed-linkedin",
