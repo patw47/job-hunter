@@ -97,11 +97,11 @@ def _build_indeed_card_text(offer: dict) -> str:
 
 def _build_card_text(offer: dict) -> str:
     """Build Telegram card message in HTML parse mode."""
-    match_rate = offer.get("match_rate", 0)
-    if isinstance(match_rate, float) and match_rate <= 1.0:
-        match_rate = int(match_rate * 100)
-    else:
-        match_rate = int(match_rate)
+    try:
+        rate = float(str(offer.get("match_rate", 0) or 0))
+    except ValueError:
+        rate = 0.0
+    match_rate = int(rate * 100) if rate <= 1.0 else int(rate)
 
     title = _escape_html(str(offer.get("title", "?")))
     company = _escape_html(str(offer.get("company", "?")))
@@ -172,10 +172,11 @@ def send_digest(offers: list[dict], bot_token: str, chat_id: str) -> None:
     """
 
     def _rate(offer: dict) -> int:
-        r = offer.get("match_rate", 0)
-        if isinstance(r, float) and r <= 1.0:
-            return int(r * 100)
-        return int(r)
+        try:
+            r = float(str(offer.get("match_rate", 0) or 0))
+        except ValueError:
+            return 0
+        return int(r * 100) if r <= 1.0 else int(r)
 
     filtered = sorted(
         [o for o in offers if 60 <= _rate(o) < 80],
