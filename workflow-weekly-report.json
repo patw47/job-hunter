@@ -70,7 +70,7 @@
       "position": [960, 0],
       "parameters": {
         "mode": "runOnceForAllItems",
-        "jsCode": "const result = $input.first().json;\nif (!result.ok) {\n  throw new Error(`/report failed: ${result.error ?? JSON.stringify(result)}`);\n}\nreturn [{ json: { report: result.result, ok: true } }];"
+        "jsCode": "let result = $input.first().json;\nif (result._readableState) {\n  const buf = result._readableState.buffer?.[0]?.data;\n  result = JSON.parse(Buffer.from(buf).toString('utf-8'));\n}\nif (!result.ok) {\n  throw new Error(`/report failed: ${result.error ?? JSON.stringify(result)}`);\n}\nreturn [{ json: { report: result.result, ok: true } }];"
       }
     },
     {
