@@ -270,7 +270,7 @@ def _sheets_append_with_retry(sheet, rows: list[list], max_retries: int = 3) -> 
 def _handle_write_scan_results(body: dict) -> dict:
     """Write high-match offers (from /layer2 high_match) to MATCHES and PENDING_MATCHES sheets."""
     import gspread
-    from deduplication import compute_hash, CREDS_PATH, SPREADSHEET_NAME
+    from deduplication import compute_stable_hash, CREDS_PATH, SPREADSHEET_NAME
 
     offers: list[dict] = body.get("offers", [])
     scan_date: str = body.get("scan_date") or _today_ddmmyyyy()

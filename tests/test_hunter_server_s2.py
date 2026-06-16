@@ -163,7 +163,7 @@ class TestSheetsRetry(unittest.TestCase):
                 with patch("gspread.service_account", return_value=mock_gc), \
                      patch("deduplication.CREDS_PATH", "/fake/creds.json"), \
                      patch("deduplication.SPREADSHEET_NAME", "Sheet"), \
-                     patch("deduplication.compute_hash", return_value="abc123"):
+                     patch("deduplication.compute_stable_hash", return_value="abc123"):
                     try:
                         result = hs._handle_write_scan_results(body)
                     except Exception as exc:
@@ -184,7 +184,7 @@ class TestSheetsRetry(unittest.TestCase):
             mock_sa.return_value = mock_gc
             with patch("deduplication.CREDS_PATH", "/fake"), \
                  patch("deduplication.SPREADSHEET_NAME", "Sheet"), \
-                 patch("deduplication.compute_hash", return_value="abc"):
+                 patch("deduplication.compute_stable_hash", return_value="abc"):
                 result = hs._handle_write_scan_results({"offers": [{"url": "u", "title": "t", "company": "c", "location": "l", "source": "s", "skills_found": [], "match_rate": 0.8}]})
         assert result["ok"] is True
 
@@ -201,7 +201,7 @@ class TestSheetsRetry(unittest.TestCase):
             mock_sa.return_value = mock_gc
             with patch("deduplication.CREDS_PATH", "/fake"), \
                  patch("deduplication.SPREADSHEET_NAME", "Sheet"), \
-                 patch("deduplication.compute_hash", return_value="abc"):
+                 patch("deduplication.compute_stable_hash", return_value="abc"):
                 try:
                     result = hs._handle_write_scan_results({"offers": [{"url": "u", "title": "t", "company": "c", "location": "l", "source": "s", "skills_found": [], "match_rate": 0.8}]})
                 except Exception:
@@ -229,7 +229,7 @@ class TestSheetsRetry(unittest.TestCase):
             mock_sa.return_value = mock_gc
             with patch("deduplication.CREDS_PATH", "/fake"), \
                  patch("deduplication.SPREADSHEET_NAME", "Sheet"), \
-                 patch("deduplication.compute_hash", return_value="abc"):
+                 patch("deduplication.compute_stable_hash", return_value="abc"):
                 hs._handle_write_scan_results({"offers": [{"url": "u", "title": "t", "company": "c", "location": "l", "source": "s", "skills_found": [], "match_rate": 0.8}]})
         # At least 2 retries happened — each delay must be >= previous
         assert len(sleep_calls) >= 2
@@ -255,7 +255,7 @@ class TestSheetsRetry(unittest.TestCase):
             mock_sa.return_value = mock_gc
             with patch("deduplication.CREDS_PATH", "/fake"), \
                  patch("deduplication.SPREADSHEET_NAME", "Sheet"), \
-                 patch("deduplication.compute_hash", return_value="abc"):
+                 patch("deduplication.compute_stable_hash", return_value="abc"):
                 try:
                     hs._handle_write_scan_results({"offers": [{"url": "u", "title": "t", "company": "c", "location": "l", "source": "s", "skills_found": [], "match_rate": 0.8}]})
                 except Exception:
