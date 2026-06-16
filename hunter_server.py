@@ -100,7 +100,7 @@ def _handle_prioritize(body: dict) -> dict:
 
 def _handle_dedup(body: dict) -> dict:
     """Deduplicate offers against SCANNED_HASHES and write all new hashes in batch."""
-    from deduplication import compute_hash, log_hashes, open_scanned_hashes
+    from deduplication import compute_hash, compute_stable_hash, log_hashes, open_scanned_hashes
 
     offers: list[dict] = body.get("offers", [])
     scan_date: str = body.get("scan_date") or _today_ddmmyyyy()
@@ -117,7 +117,7 @@ def _handle_dedup(body: dict) -> dict:
 
     for offer in offers:
         url: str = offer.get("url", "")
-        url_hash = compute_hash(url)
+        url_hash = compute_stable_hash(offer.get("title", ""), offer.get("company", ""))
         if url_hash in existing_hashes:
             continue
         # Track in-session to avoid writing the same URL twice in one scan
@@ -287,7 +287,7 @@ def _handle_write_scan_results(body: dict) -> dict:
     pending_rows: list[list] = []
 
     for rank, offer in enumerate(offers, start=1):
-        job_id = compute_hash(offer.get("url", ""))
+        job_id = compute_stable_hash(offer.get("title", ""), offer.get("company", ""))
         skills_str = ", ".join(offer.get("skills_found") or [])
         match_pct = round((offer.get("match_rate") or 0.0) * 100, 1)
         # MATCHES columns: job_id, date_scanned, title, company, location, remote, url, source, match_rate, skills_found, status, cv_drive_link, letter_drive_link, applied_at

@@ -29,6 +29,12 @@ def compute_hash(url: str) -> str:
     return hashlib.sha256(normalize_url(url).encode()).hexdigest()
 
 
+def compute_stable_hash(title: str, company: str) -> str:
+    """Return SHA-256 of normalized title+company — stable across URL changes."""
+    key = (title.lower().strip() + "|" + company.lower().strip()).encode()
+    return hashlib.sha256(key).hexdigest()
+
+
 def is_duplicate(url_hash: str, sheet: Worksheet) -> bool:
     """Return True if url_hash already appears in column 1 (sha256) of SCANNED_HASHES."""
     existing: list[str] = sheet.col_values(1)

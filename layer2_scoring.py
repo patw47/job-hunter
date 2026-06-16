@@ -150,10 +150,10 @@ def write_match_if_qualified(
         )
         return False
 
-    from deduplication import compute_hash
+    from deduplication import compute_stable_hash
 
     row: list[str] = [
-        compute_hash(offer["url"]),
+        compute_stable_hash(offer.get("title", ""), offer.get("company", "")),
         scan_date,
         offer.get("title", ""),
         offer.get("company", ""),

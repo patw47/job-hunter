@@ -11,7 +11,7 @@
 The Hunter is an OpenClaw-based AI agent running on a self-hosted VPS (n8n + systemd). Every day at 12h00 it:
 
 1. **Scans** Indeed (MCP) + LinkedIn (Playwright) for remote AI/ML/FullStack job postings — 60 + 40 offers/day
-2. **Deduplicates** permanently — nothing ever comes back once seen
+2. **Deduplicates** permanently via SHA-256(title+company) — URL-independent, nothing ever comes back once seen
 3. **Filters** in 2 deterministic layers (zero tokens):
     - Layer 1: disqualifying filters (on-site, junior, excluded sectors)
     - Layer 2: CV match rate against `SKILLS_MASTER.md` — threshold ≥ 60%
@@ -123,7 +123,7 @@ Alias table handles vocabulary differences: "Vector DB" → Qdrant/Pinecone/pgve
 |---|---|---|
 |Layer 1 filters|Python regex|None|
 |Match rate calculation|Python set intersection|None|
-|Deduplication|SHA-256 + Excel lookup|None|
+|Deduplication|SHA-256(title+company) + Excel lookup|None|
 |Sorting + top 25 cap|Python|None|
 |Form question detection|Playwright + regex|None|
 |Pre-calibrated answers|USER.md lookup|None|
